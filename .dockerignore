@@ -1,0 +1,9 @@
+.git
+.gitignore
+__pycache__/
+*.pyc
+out/
+demo/
+.env
+*.md
+!README.md

@@ -1,0 +1,908 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Invoice Match Desk</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+:root{
+  --ground:#f3f2ee;
+  --surface:#fbfaf8;
+  --surface-2:#eeece6;
+  --ink:#1a1d1f;
+  --ink-2:#41474a;
+  --muted:#6b7275;
+  --line:#dedbd2;
+  --line-2:#c9c5b9;
+  --accent:#1f4b3f;
+  --accent-soft:#dfe9e4;
+  --ok:#2d6a4f;
+  --ok-soft:#dfeee5;
+  --warn:#8a6410;
+  --warn-soft:#f5e9cd;
+  --block:#a4392a;
+  --block-soft:#f7e0da;
+  --fraud:#6d3a6e;
+  --fraud-soft:#eddff0;
+  --shadow:0 1px 2px rgba(26,29,31,.06), 0 8px 24px -16px rgba(26,29,31,.35);
+  --r:7px;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --ground:#121513;
+    --surface:#191d1b;
+    --surface-2:#212724;
+    --ink:#e9e8e3;
+    --ink-2:#c2c6c2;
+    --muted:#8f9692;
+    --line:#2b312e;
+    --line-2:#3a423e;
+    --accent:#7fc2a8;
+    --accent-soft:#1e2a26;
+    --ok:#6fbf95;
+    --ok-soft:#17261f;
+    --warn:#d9a441;
+    --warn-soft:#2a2317;
+    --block:#e78673;
+    --block-soft:#2c1c19;
+    --fraud:#c79ccb;
+    --fraud-soft:#241a26;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 10px 28px -18px rgba(0,0,0,.9);
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#121513; --surface:#191d1b; --surface-2:#212724;
+  --ink:#e9e8e3; --ink-2:#c2c6c2; --muted:#8f9692;
+  --line:#2b312e; --line-2:#3a423e;
+  --accent:#7fc2a8; --accent-soft:#1e2a26;
+  --ok:#6fbf95; --ok-soft:#17261f;
+  --warn:#d9a441; --warn-soft:#2a2317;
+  --block:#e78673; --block-soft:#2c1c19;
+  --fraud:#c79ccb; --fraud-soft:#241a26;
+  --shadow:0 1px 2px rgba(0,0,0,.4), 0 10px 28px -18px rgba(0,0,0,.9);
+  color-scheme:dark;
+}
+
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--ground); color:var(--ink);
+  font-family:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  font-size:14px; line-height:1.5; -webkit-font-smoothing:antialiased;
+}
+.mono{font-family:"IBM Plex Mono",ui-monospace,"SF Mono",Menlo,monospace;font-variant-numeric:tabular-nums}
+h1,h2,h3{font-family:Spectral,Georgia,serif;font-weight:600;margin:0;text-wrap:balance}
+a{color:inherit}
+button{font:inherit;color:inherit}
+
+.wrap{max-width:1400px;margin:0 auto;padding-inline:20px;padding-block:0 40px}
+
+/* ---------- masthead ---------- */
+header.top{border-bottom:1px solid var(--line);background:var(--surface)}
+.top-in{max-width:1400px;margin:0 auto;padding:18px 20px 0;display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start;justify-content:space-between}
+.brand h1{font-size:23px;letter-spacing:-.01em}
+.brand p{margin:3px 0 0;color:var(--muted);font-size:12.5px;max-width:60ch}
+.runmeta{display:flex;gap:22px;flex-wrap:wrap;align-items:baseline}
+.runmeta div{display:flex;flex-direction:column;gap:1px}
+.runmeta .k{font-size:10px;text-transform:uppercase;letter-spacing:.09em;color:var(--muted)}
+.runmeta .v{font-size:17px;font-weight:600}
+
+nav.tabs{max-width:1400px;margin:0 auto;padding:14px 20px 0;display:flex;gap:2px}
+nav.tabs button{
+  background:none;border:0;border-bottom:2px solid transparent;padding:8px 14px 10px;
+  cursor:pointer;color:var(--muted);font-size:13px;font-weight:500;letter-spacing:.01em;
+}
+nav.tabs button:hover{color:var(--ink)}
+nav.tabs button[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--accent)}
+nav.tabs button:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:3px}
+
+/* ---------- decision spectrum ---------- */
+.spectrum{display:flex;height:9px;border-radius:99px;overflow:hidden;background:var(--surface-2);margin-top:14px}
+.spectrum span{display:block}
+.legend{display:flex;gap:16px;flex-wrap:wrap;margin-top:9px;font-size:11.5px;color:var(--muted)}
+.legend b{color:var(--ink);font-weight:600}
+.dot{width:8px;height:8px;border-radius:2px;display:inline-block;margin-right:5px;vertical-align:-1px}
+
+/* ---------- workspace ---------- */
+.desk{display:grid;grid-template-columns:minmax(300px,384px) 1fr;gap:18px;margin-top:20px;align-items:start}
+@media (max-width:900px){.desk{grid-template-columns:1fr}}
+
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--r)}
+.panel-h{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 14px;border-bottom:1px solid var(--line)}
+.panel-h h2{font-size:14px}
+.panel-h .count{font-size:11px;color:var(--muted)}
+
+.filters{display:flex;gap:6px;flex-wrap:wrap;padding:10px 14px;border-bottom:1px solid var(--line)}
+.chip{
+  border:1px solid var(--line-2);background:transparent;border-radius:99px;
+  padding:3px 10px;font-size:11.5px;cursor:pointer;color:var(--ink-2);
+}
+.chip[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:var(--ground)}
+.chip:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.search{flex:1;min-width:120px;border:1px solid var(--line-2);background:var(--ground);color:var(--ink);border-radius:99px;padding:3px 11px;font-size:11.5px}
+
+/* ---------- upload ---------- */
+.dropzone{margin:12px 14px;border:1px dashed var(--line-2);border-radius:var(--r);padding:14px;text-align:center;background:var(--ground)}
+.dropzone.over{border-color:var(--accent);background:var(--accent-soft)}
+.dropzone.disabled{opacity:.72}
+.dz-idle{display:flex;flex-direction:column;gap:7px;align-items:center}
+.dz-idle b{font-size:12.5px}
+.dz-idle span{font-size:11.5px;color:var(--muted);max-width:34ch;line-height:1.45}
+.dz-busy{display:flex;gap:9px;align-items:center;justify-content:center;font-size:12.5px;color:var(--ink-2)}
+.dz-err{font-size:12px;color:var(--block);text-align:left;line-height:1.45}
+.spin{width:13px;height:13px;border:2px solid var(--line-2);border-top-color:var(--accent);border-radius:50%;display:inline-block;animation:sp .8s linear infinite;flex:none}
+@keyframes sp{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.spin{animation-duration:2.4s}}
+
+.queue{max-height:min(66vh,700px);overflow:auto}
+.row{
+  display:grid;grid-template-columns:4px 1fr auto;gap:0;
+  border-bottom:1px solid var(--line);cursor:pointer;background:none;border-left:0;border-right:0;border-top:0;
+  width:100%;text-align:left;padding:0;
+}
+.row:last-child{border-bottom:0}
+.row:hover{background:var(--surface-2)}
+.row[aria-current="true"]{background:var(--accent-soft)}
+.row .stripe{background:var(--line-2)}
+.row.sev-none .stripe{background:var(--ok)}
+.row.sev-warning .stripe{background:var(--warn)}
+.row.sev-blocker .stripe{background:var(--block)}
+.row.sev-fraud .stripe{background:var(--fraud)}
+.row .body{padding:9px 12px;min-width:0}
+.row .r1{display:flex;gap:8px;align-items:baseline;min-width:0}
+.row .doc{font-size:11.5px;color:var(--muted);flex:none}
+.row .ven{font-weight:500;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row .r2{display:flex;gap:7px;align-items:center;margin-top:3px;flex-wrap:wrap}
+.row .amt{padding:9px 12px;text-align:right;font-size:12.5px;white-space:nowrap;align-self:center}
+.row .amt small{display:block;color:var(--muted);font-size:10.5px;margin-top:2px}
+
+.tag{font-size:10.5px;padding:1.5px 7px;border-radius:4px;border:1px solid transparent;white-space:nowrap}
+.tag.none{background:var(--ok-soft);color:var(--ok)}
+.tag.warning{background:var(--warn-soft);color:var(--warn)}
+.tag.blocker{background:var(--block-soft);color:var(--block)}
+.tag.fraud{background:var(--fraud-soft);color:var(--fraud)}
+.tag.plain{background:var(--surface-2);color:var(--muted)}
+.tag.outline{border-color:var(--line-2);color:var(--muted)}
+
+/* ---------- detail ---------- */
+.detail{min-height:400px}
+.dh{padding:16px 18px;border-bottom:1px solid var(--line)}
+.dh .eyebrow{font-size:10.5px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted)}
+.dh h2{font-size:19px;margin-top:3px}
+.dh .sub{color:var(--muted);font-size:12.5px;margin-top:4px}
+
+.verdict{display:flex;gap:12px;align-items:flex-start;padding:13px 18px;border-bottom:1px solid var(--line)}
+.verdict .mark{width:3px;align-self:stretch;border-radius:2px;flex:none}
+.verdict .t{font-weight:600;font-size:14px}
+.verdict .d{color:var(--ink-2);font-size:12.5px;margin-top:2px}
+.verdict .route{font-size:11.5px;color:var(--muted);margin-top:5px}
+.v-auto_approve .mark{background:var(--ok)} .v-auto_approve .t{color:var(--ok)}
+.v-approve_with_review .mark{background:var(--warn)} .v-approve_with_review .t{color:var(--warn)}
+.v-block_for_payment .mark{background:var(--block)} .v-block_for_payment .t{color:var(--block)}
+.v-reject .mark{background:var(--fraud)} .v-reject .t{color:var(--fraud)}
+
+.sec{padding:15px 18px;border-bottom:1px solid var(--line)}
+.sec:last-child{border-bottom:0}
+.sec > h3{font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);font-family:"IBM Plex Sans",sans-serif;font-weight:600;margin-bottom:10px}
+
+/* three-source evidence */
+.evline{border:1px solid var(--line);border-radius:var(--r);overflow:hidden;margin-bottom:12px}
+.evline:last-child{margin-bottom:0}
+.evline > .lh{display:flex;justify-content:space-between;gap:10px;align-items:center;padding:8px 12px;background:var(--surface-2);font-size:12px}
+.sources{display:grid;grid-template-columns:repeat(3,1fr)}
+@media (max-width:720px){.sources{grid-template-columns:1fr}}
+.src{padding:11px 12px;border-right:1px solid var(--line)}
+.src:last-child{border-right:0}
+@media (max-width:720px){.src{border-right:0;border-bottom:1px solid var(--line)}.src:last-child{border-bottom:0}}
+.src h4{margin:0 0 7px;font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);font-weight:600;font-family:"IBM Plex Sans",sans-serif}
+.kv{display:flex;justify-content:space-between;gap:10px;font-size:12px;padding:1.5px 0}
+.kv span:first-child{color:var(--muted)}
+.kv span:last-child{text-align:right}
+.kv.hl span:last-child{color:var(--block);font-weight:600}
+
+.exc{display:flex;gap:10px;padding:10px 12px;border-top:1px solid var(--line)}
+.exc .bar{width:3px;border-radius:2px;flex:none;align-self:stretch}
+.exc.s-warning .bar{background:var(--warn)} .exc.s-blocker .bar{background:var(--block)}
+.exc.s-fraud .bar{background:var(--fraud)} .exc.s-info .bar{background:var(--line-2)}
+.exc.tolerated{opacity:.62}
+.exc .code{font-size:11px;letter-spacing:.02em;color:var(--muted)}
+.exc .lbl{font-weight:600;font-size:12.5px}
+.exc .det{font-size:12px;color:var(--ink-2);margin-top:2px}
+.exc .cmp{display:flex;gap:16px;flex-wrap:wrap;margin-top:5px;font-size:11.5px}
+.exc .cmp b{font-weight:500;color:var(--muted);margin-right:5px}
+
+.trace{background:var(--ground);border:1px solid var(--line);border-radius:var(--r);padding:10px 12px;font-size:11.5px;color:var(--ink-2)}
+.trace div{padding:1.5px 0}
+.trace div::before{content:"› ";color:var(--muted)}
+
+details.doc summary{cursor:pointer;font-size:12px;color:var(--muted);padding:2px 0}
+details.doc pre{background:var(--ground);border:1px solid var(--line);border-radius:var(--r);padding:12px;overflow-x:auto;font-size:11px;line-height:1.45;margin:9px 0 0}
+
+.actions{display:flex;gap:8px;flex-wrap:wrap}
+.btn{border:1px solid var(--line-2);background:var(--surface);border-radius:5px;padding:6px 13px;font-size:12.5px;cursor:pointer}
+.btn:hover{border-color:var(--ink-2)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--ground)}
+.btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.noted{font-size:12px;color:var(--ok);align-self:center}
+
+/* ---------- evals ---------- */
+.grid-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:12px}
+.stat{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:13px 14px}
+.stat .k{font-size:10.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--muted)}
+.stat .v{font-size:26px;font-weight:600;margin-top:5px;line-height:1.1}
+.stat .n{font-size:11.5px;color:var(--muted);margin-top:4px}
+.stat.flag{border-color:var(--ok);background:var(--ok-soft)}
+.stat.flag .v{color:var(--ok)}
+.stat.bad{border-color:var(--block);background:var(--block-soft)}
+.stat.bad .v{color:var(--block)}
+
+table.t{width:100%;border-collapse:collapse;font-size:12.5px}
+table.t th{text-align:left;font-weight:600;font-size:10.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);padding:7px 10px;border-bottom:1px solid var(--line-2)}
+table.t td{padding:7px 10px;border-bottom:1px solid var(--line)}
+table.t tr:last-child td{border-bottom:0}
+table.t td.num,table.t th.num{text-align:right;font-family:"IBM Plex Mono",monospace;font-variant-numeric:tabular-nums}
+.scroll-x{overflow-x:auto}
+.meter{height:5px;border-radius:99px;background:var(--surface-2);overflow:hidden;min-width:60px}
+.meter i{display:block;height:100%;background:var(--accent)}
+
+.note{font-size:12.5px;color:var(--ink-2);background:var(--surface);border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:var(--r);padding:12px 14px}
+.note p{margin:0 0 8px} .note p:last-child{margin:0}
+
+.policy-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}
+.slider{display:flex;flex-direction:column;gap:6px}
+.slider label{font-size:12px;color:var(--muted)}
+.slider input[type=range]{width:100%;accent-color:var(--accent)}
+.slider .val{font-size:19px;font-weight:600}
+
+.stack{display:flex;flex-direction:column;gap:14px}
+.hidden{display:none!important}
+.empty{padding:44px 20px;text-align:center;color:var(--muted);font-size:13px}
+@media (prefers-reduced-motion:no-preference){
+  .row,.chip,.btn{transition:background-color .12s ease,border-color .12s ease}
+}
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="top-in">
+    <div class="brand">
+      <h1>Invoice Match Desk</h1>
+      <p>Every incoming invoice checked against its purchase order and its goods receipt, then against the company's approval policy. Exceptions arrive with the numbers that produced them.</p>
+    </div>
+    <div class="runmeta" id="runmeta"></div>
+  </div>
+  <div class="top-in" style="padding-top:12px">
+    <div style="flex:1;min-width:280px">
+      <div class="spectrum" id="spectrum"></div>
+      <div class="legend" id="legend"></div>
+    </div>
+  </div>
+  <nav class="tabs" role="tablist">
+    <button role="tab" aria-selected="true" data-tab="queue">Exception queue</button>
+    <button role="tab" aria-selected="false" data-tab="evals">Evaluation</button>
+    <button role="tab" aria-selected="false" data-tab="policy">Policy</button>
+    <button role="tab" aria-selected="false" data-tab="how">How it works</button>
+  </nav>
+</header>
+
+<div class="wrap">
+
+  <!-- QUEUE -->
+  <section id="tab-queue">
+    <div class="desk">
+      <div class="panel">
+        <div class="panel-h">
+          <h2>Queue</h2>
+          <span class="count" id="qcount"></span>
+        </div>
+        <div id="dropzone" class="dropzone hidden">
+          <input type="file" id="fileinput" accept="application/pdf,image/*" hidden>
+          <div class="dz-idle">
+            <b>Drop an invoice PDF here</b>
+            <span id="dz-sub">Claude reads the document, the engine matches it against the same PO and goods-receipt master.</span>
+            <button class="btn" id="dz-browse" type="button">Choose a file</button>
+          </div>
+          <div class="dz-busy hidden"><span class="spin" aria-hidden="true"></span><span id="dz-status">Reading the document…</span></div>
+          <div class="dz-err hidden" id="dz-err"></div>
+        </div>
+        <div class="filters" id="filters">
+          <button class="chip" aria-pressed="true" data-f="all">All</button>
+          <button class="chip" aria-pressed="false" data-f="stopped">Needs a human</button>
+          <button class="chip" aria-pressed="false" data-f="fraud">Payment integrity</button>
+          <button class="chip" aria-pressed="false" data-f="clean">Touchless</button>
+          <input class="search" id="search" type="search" placeholder="vendor, PO, code" aria-label="Search the queue">
+        </div>
+        <div class="queue" id="queue"></div>
+      </div>
+
+      <div class="panel detail" id="detail">
+        <div class="empty">Select an invoice to see the match.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- EVALS -->
+  <section id="tab-evals" class="hidden stack" style="margin-top:20px"></section>
+
+  <!-- POLICY -->
+  <section id="tab-policy" class="hidden stack" style="margin-top:20px"></section>
+
+  <!-- HOW -->
+  <section id="tab-how" class="hidden stack" style="margin-top:20px"></section>
+</div>
+
+<script>
+/* ------------------------------------------------------------------ *
+ * Data access. The same page runs two ways:
+ *   - served by app/api.py, fetching from /api/*
+ *   - published standalone with the run embedded as window.__RUN__
+ * ------------------------------------------------------------------ */
+const EMBED = window.__RUN__ || null;
+
+async function api(path) {
+  if (EMBED) {
+    if (path === "/api/summary") return EMBED.summary;
+    if (path === "/api/evals")   return EMBED.evals;
+    if (path === "/api/policy")  return EMBED.policy;
+    if (path === "/api/queue")   return { rows: EMBED.queue };
+    if (path.startsWith("/api/invoice/")) return EMBED.details[path.split("/").pop()];
+    return {};
+  }
+  const r = await fetch(path);
+  return r.json();
+}
+
+const S = { summary:null, evals:null, policy:null, rows:[], filter:"all", q:"", sel:null,
+            autoLimit:null, reviewed:{} };
+
+const money = (v, cur) => v == null ? "—" :
+  Number(v).toLocaleString("en-US", {style:"currency", currency:cur||"USD", maximumFractionDigits:2});
+const pct = v => (v*100).toFixed(1).replace(/\.0$/,"") + "%";
+const esc = s => String(s == null ? "" : s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));
+
+const DEC = {
+  auto_approve:       {label:"Posted without review", cls:"none"},
+  approve_with_review:{label:"Routed for approval",   cls:"warning"},
+  block_for_payment:  {label:"Blocked for payment",   cls:"blocker"},
+  reject:             {label:"Rejected",              cls:"fraud"}
+};
+const DECVAR = {auto_approve:"--ok", approve_with_review:"--warn", block_for_payment:"--block", reject:"--fraud"};
+
+/* --- policy ladder, re-run in the page ---------------------------- */
+/* Mirrors app/policy.py. Matching is not re-run here: the exceptions
+   below are the engine's output. Only the approval ladder moves. */
+function decide(row, limit, tiers) {
+  if (row.exception_codes.includes("DUPLICATE_INVOICE"))
+    return {decision:"reject", role:"AP Manager", sla:8};
+  if (row.severities.includes("fraud"))
+    return {decision:"block_for_payment", role:"AP Manager", sla:4};
+  const gross = Number(row.gross_total || 0);
+  const tier = tiers.find(t => gross <= Number(t.up_to)) || tiers[tiers.length-1];
+  if (row.severities.includes("blocker"))
+    return {decision:"block_for_payment", role:tier.role, sla:tier.sla_hours};
+  if (row.severities.includes("warning"))
+    return {decision:"approve_with_review", role:tier.role, sla:tier.sla_hours};
+  if (gross <= limit) return {decision:"auto_approve", role:null, sla:null};
+  return {decision:"approve_with_review", role:tier.role, sla:tier.sla_hours};
+}
+
+function applyPolicy() {
+  const limit = S.autoLimit, tiers = S.policy.tiers;
+  S.rows.forEach(r => {
+    const d = decide(r, limit, tiers);
+    r.decision = d.decision; r.approver_role = d.role; r.sla_hours = d.sla;
+  });
+}
+
+/* --- masthead ------------------------------------------------------ */
+function renderTop() {
+  const counts = {auto_approve:0, approve_with_review:0, block_for_payment:0, reject:0};
+  let held = 0, released = 0;
+  S.rows.forEach(r => {
+    counts[r.decision]++;
+    const g = Number(r.gross_total || 0);
+    if (r.decision === "block_for_payment" || r.decision === "reject") held += g; else released += g;
+  });
+  const n = S.rows.length || 1;
+  const touchless = counts.auto_approve / n;
+
+  document.getElementById("runmeta").innerHTML = [
+    ["Invoices", S.rows.length],
+    ["Touchless", pct(touchless)],
+    ["Held", money(held)],
+    ["Released", money(released)],
+    ["p95 latency", (S.summary.latency_ms.p95) + " ms"]
+  ].map(([k,v]) => `<div><span class="k">${k}</span><span class="v mono">${esc(v)}</span></div>`).join("");
+
+  document.getElementById("spectrum").innerHTML = Object.keys(DEC)
+    .map(k => counts[k] ? `<span style="width:${counts[k]/n*100}%;background:var(${DECVAR[k]})" title="${DEC[k].label}: ${counts[k]}"></span>` : "")
+    .join("");
+  document.getElementById("legend").innerHTML = Object.keys(DEC)
+    .map(k => `<span><i class="dot" style="background:var(${DECVAR[k]})"></i>${DEC[k].label} <b>${counts[k]}</b></span>`)
+    .join("");
+}
+
+/* --- queue --------------------------------------------------------- */
+function visibleRows() {
+  const q = S.q.trim().toLowerCase();
+  return S.rows.filter(r => {
+    if (S.filter === "stopped" && r.decision === "auto_approve") return false;
+    if (S.filter === "clean" && r.decision !== "auto_approve") return false;
+    if (S.filter === "fraud" && !r.severities.includes("fraud")) return false;
+    if (!q) return true;
+    return (r.vendor + " " + r.doc_id + " " + r.xblnr + " " + r.scenario + " " +
+            r.exception_codes.join(" ") + " " + (r.po_numbers||[]).join(" ")).toLowerCase().includes(q);
+  });
+}
+
+function renderQueue() {
+  const rows = visibleRows();
+  document.getElementById("qcount").textContent = rows.length + " of " + S.rows.length;
+  const el = document.getElementById("queue");
+  if (!rows.length) { el.innerHTML = '<div class="empty">Nothing matches that filter.</div>'; return; }
+  el.innerHTML = rows.map(r => {
+    const sev = r.severity === "none" ? "none" : r.severity;
+    const d = DEC[r.decision];
+    return `<button class="row sev-${esc(sev)}" data-id="${esc(r.doc_id)}" aria-current="${S.sel===r.doc_id}">
+      <span class="stripe"></span>
+      <span class="body">
+        <span class="r1"><span class="doc mono">${esc(r.doc_id)}</span><span class="ven">${esc(r.vendor)}</span></span>
+        <span class="r2">
+          ${r.uploaded ? `<span class="tag plain">uploaded</span>` : ""}
+          <span class="tag ${esc(d.cls)}">${esc(d.label)}</span>
+          ${r.exception_codes.slice(0,2).map(c => `<span class="tag outline mono">${esc(c)}</span>`).join("")}
+          ${r.exception_codes.length > 2 ? `<span class="tag plain">+${r.exception_codes.length-2}</span>` : ""}
+          ${S.reviewed[r.doc_id] ? `<span class="tag none">${esc(S.reviewed[r.doc_id])}</span>` : ""}
+        </span>
+      </span>
+      <span class="amt mono">${esc(money(r.gross_total, r.currency))}<small>${esc(r.bldat||"")}</small></span>
+    </button>`;
+  }).join("");
+  el.querySelectorAll(".row").forEach(b => b.onclick = () => select(b.dataset.id));
+}
+
+/* --- detail -------------------------------------------------------- */
+function excHTML(e) {
+  const tol = e.within_tolerance;
+  const cmp = [];
+  if (e.expected != null) cmp.push(`<span><b>PO / expected</b><span class="mono">${esc(e.expected)}</span></span>`);
+  if (e.actual != null)   cmp.push(`<span><b>Invoice / actual</b><span class="mono">${esc(e.actual)}</span></span>`);
+  if (e.variance != null) cmp.push(`<span><b>Variance</b><span class="mono">${esc(e.variance)}</span></span>`);
+  return `<div class="exc s-${esc(e.severity)}${tol ? " tolerated":""}">
+    <span class="bar"></span>
+    <span>
+      <span class="code mono">${esc(e.code)}${tol ? " · absorbed by tolerance" : ""}</span>
+      <div class="lbl">${esc(e.label)}</div>
+      <div class="det">${esc(e.detail || e.explain)}</div>
+      ${cmp.length ? `<div class="cmp">${cmp.join("")}</div>` : ""}
+    </span></div>`;
+}
+
+function srcKV(pairs) {
+  return pairs.map(([k,v,hl]) =>
+    `<div class="kv${hl?" hl":""}"><span>${esc(k)}</span><span class="mono">${esc(v==null?"—":v)}</span></div>`).join("");
+}
+
+function lineHTML(d, lm, i) {
+  const ev = (d.evidence || [])[i] || {};
+  const pl = ev.po_line, po = ev.po, grs = ev.goods_receipts || [];
+  const il = (d.invoice.lines || []).find(x => x.line_no === lm.line_no) || {};
+  const net = grs.reduce((a,g) => a + Number(g.signed_qty), 0);
+  const cur = d.invoice.currency || d.invoice.waers || "USD";
+  const bad = lm.status === "exception" || lm.status === "unmatched";
+  return `<div class="evline">
+    <div class="lh">
+      <span><b>Line ${lm.line_no}</b> · ${esc(il.description || "")}</span>
+      <span class="tag ${bad ? "blocker" : (lm.status === "matched_with_tolerance" ? "warning" : "none")}">${esc(lm.status.replace(/_/g," "))}</span>
+    </div>
+    <div class="sources">
+      <div class="src"><h4>Invoice says</h4>${srcKV([
+        ["Quantity", il.menge + " " + (il.meins||"")],
+        ["Unit price", il.unit_price],
+        ["Line amount", money(il.amount, cur)],
+        ["PO reference", (il.ebeln||"—") + (il.ebelp ? " / " + il.ebelp : "")],
+        ["Tax code", il.tax_code]
+      ])}</div>
+      <div class="src"><h4>Purchase order says</h4>${srcKV(pl ? [
+        ["Ordered", pl.menge + " " + pl.meins],
+        ["Net price", pl.unit_price + " per " + pl.meins],
+        ["Line value", money(pl.net_value, po ? po.waers : cur)],
+        ["GR-based IV", pl.webre ? "yes" : "no"],
+        ["Over-delivery tol.", pl.uebto + "%"]
+      ] : [["Purchase order", "not found", true]])}</div>
+      <div class="src"><h4>Goods receipt says</h4>${srcKV(
+        grs.length ? grs.map(g => [
+          (g.bwart === "101" ? "Received" : "Reversed") + " " + g.budat,
+          (g.bwart === "101" ? "" : "−") + g.menge + " " + g.meins
+        ]).concat([
+          ["Net received", net.toFixed(3), bad],
+          ["Previously invoiced", lm.prior_invoiced_qty]
+        ]) : [[pl && !pl.webre ? "Not required (2-way match)" : "Nothing received", pl && !pl.webre ? "—" : "0", pl && pl.webre]]
+      )}</div>
+    </div>
+    ${(lm.exceptions||[]).map(excHTML).join("")}
+  </div>`;
+}
+
+function renderDetail(d) {
+  const el = document.getElementById("detail");
+  if (!d) { el.innerHTML = '<div class="empty">Select an invoice to see the match.</div>'; return; }
+  const row = S.rows.find(r => r.doc_id === d.invoice.doc_id);
+  const dec = row ? row.decision : d.policy.decision;
+  const cur = d.invoice.waers || "USD";
+  const conf = Object.entries(d.invoice.confidences || {})
+    .filter(([k]) => !k.startsWith("_")).map(([k,v]) => [k, v]);
+  const lowConf = conf.filter(([,v]) => v < (S.policy.field_confidence_threshold || .8));
+
+  el.innerHTML = `
+    <div class="dh">
+      <div class="eyebrow">${esc(d.invoice.doc_id)} · ${esc(d.scenario.replace(/_/g," "))}</div>
+      <h2>${esc(d.invoice.vendor_name)}</h2>
+      <div class="sub mono">Invoice ${esc(d.invoice.xblnr || "—")} · ${esc(d.invoice.bldat || "—")} · ${esc(money(d.invoice.gross_total, cur))} · vendor ${esc(d.invoice.lifnr || "unresolved")}</div>
+    </div>
+
+    <div class="verdict v-${esc(dec)}">
+      <span class="mark"></span>
+      <span>
+        <div class="t">${esc(DEC[dec].label)}</div>
+        <div class="d">${esc(d.policy.reason)}</div>
+        ${row && row.approver_role ? `<div class="route">Owner: ${esc(row.approver_role)} · respond within ${esc(row.sla_hours)}h</div>` : ""}
+        ${(d.policy.notes||[]).map(n => `<div class="route">${esc(n)}</div>`).join("")}
+      </span>
+    </div>
+
+    ${d.match.header_exceptions.length ? `<div class="sec"><h3>Document-level findings</h3>
+      <div class="evline">${d.match.header_exceptions.map(excHTML).join("")}</div></div>` : ""}
+
+    <div class="sec"><h3>Three-way comparison</h3>
+      ${d.match.lines.map((lm,i) => lineHTML(d, lm, i)).join("")}
+    </div>
+
+    <div class="sec"><h3>What the extractor read</h3>
+      <div class="scroll-x"><table class="t"><thead><tr><th>Field</th><th class="num">Confidence</th><th>Legibility</th></tr></thead><tbody>
+      ${conf.sort((a,b)=>a[1]-b[1]).slice(0,6).map(([k,v]) => `<tr>
+        <td class="mono">${esc(k)}</td><td class="num">${v.toFixed(2)}</td>
+        <td><span class="meter" style="display:block"><i style="width:${Math.round(v*100)}%;background:var(${v < .8 ? "--warn" : "--accent"})"></i></span></td>
+      </tr>`).join("")}
+      </tbody></table></div>
+      <p style="font-size:12px;color:var(--muted);margin:9px 0 0">
+        ${lowConf.length
+          ? "Below the " + (S.policy.field_confidence_threshold) + " threshold: " + lowConf.map(([k])=>k).join(", ") + ". The document goes to a human rather than being trusted."
+          : "Every decision-critical field was legible, so the match ran on read values rather than guesses."}
+      </p>
+    </div>
+
+    <div class="sec"><h3>Trace</h3>
+      <div class="trace">${(d.trace||[]).map(t => `<div>${esc(t)}</div>`).join("")}</div>
+      <p style="font-size:12px;color:var(--muted);margin:9px 0 0">
+        extract ${d.latency_ms.extract} ms · match ${d.latency_ms.match} ms · policy ${d.latency_ms.policy} ms
+      </p>
+    </div>
+
+    <div class="sec">
+      <details class="doc"><summary>Show the source document</summary><pre>${esc(d.document_text)}</pre></details>
+      ${(!EMBED && !d.uploaded) ? `<p style="font-size:12px;color:var(--muted);margin:9px 0 0">
+        <a href="/api/sample/${esc(d.invoice.doc_id)}.pdf">Download this invoice as a PDF</a> and drop it on the queue to run it through the model-backed extractor, which has never seen it as structured data.
+      </p>` : ""}
+      ${d.uploaded ? `<p style="font-size:12px;color:var(--muted);margin:9px 0 0">
+        Read from <span class="mono">${esc(d.source_filename || "")}</span>. The text above is this system's rendering of what was extracted, not the original page.
+      </p>` : ""}
+    </div>
+
+    <div class="sec">
+      <h3>Reviewer action</h3>
+      <div class="actions">
+        <button class="btn primary" data-act="approved">Approve and post</button>
+        <button class="btn" data-act="queried">Query with vendor</button>
+        <button class="btn" data-act="rejected">Reject</button>
+        <span class="noted" id="noted">${S.reviewed[d.invoice.doc_id] ? "Recorded: " + esc(S.reviewed[d.invoice.doc_id]) : ""}</span>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin:10px 0 0">${esc(d.note)}</p>
+    </div>`;
+
+  el.querySelectorAll("[data-act]").forEach(b => b.onclick = async () => {
+    const act = b.dataset.act;
+    S.reviewed[d.invoice.doc_id] = act;
+    document.getElementById("noted").textContent = "Recorded: " + act;
+    renderQueue();
+    if (!EMBED) {
+      try { await fetch("/api/decision", {method:"POST", headers:{"content-type":"application/json"},
+        body: JSON.stringify({doc_id:d.invoice.doc_id, action:act})}); } catch (e) {}
+    }
+  });
+}
+
+async function select(id) {
+  S.sel = id;
+  renderQueue();
+  renderDetail(await api("/api/invoice/" + id));
+  if (window.innerWidth < 900) document.getElementById("detail").scrollIntoView({behavior:"smooth", block:"start"});
+}
+
+/* --- evaluation tab ------------------------------------------------ */
+function renderEvals() {
+  const e = S.evals, h = e.headline, d = e.decisions, x = e.extraction;
+  const cards = [
+    ["False approvals", d.false_approvals.length, d.false_approvals.length === 0 ? "flag" : "bad",
+     "Invoices waved through that a reviewer would have stopped. The only number here that costs money."],
+    ["Field extraction accuracy", pct(x.field_accuracy), "", x.fields_compared + " fields compared against the printed document"],
+    ["Decision accuracy", pct(d.decision_accuracy), "", d.cases + " labelled invoices"],
+    ["Exception recall", pct(d.exception_recall), "", "share of real exceptions the engine raised"],
+    ["Exception precision", pct(d.exception_precision), "", "share of raised exceptions that were real"],
+    ["False exceptions", d.false_exceptions.length, d.false_exceptions.length === 0 ? "flag" : "bad",
+     "clean invoices sent to a human for nothing"],
+    ["Confidently wrong fields", x.confidently_wrong_fields, x.confidently_wrong_fields ? "bad" : "flag",
+     "read with high confidence and still incorrect"],
+    ["p95 latency", h.latency_p95_ms + " ms", "", "per invoice, extraction through decision"]
+  ];
+  document.getElementById("tab-evals").innerHTML = `
+    <div class="note">
+      <p><b>Two questions, measured separately.</b> Did we read the document correctly, and given what we read, did we decide correctly? They fail for different reasons and have different fixes. A single blended accuracy figure would hide which one is broken.</p>
+      <p>Scored against ${d.cases} labelled invoices, each carrying the exception codes and the decision it should produce. Exception recall is the share of real exceptions found; precision is the share of raised exceptions that were real.</p>
+    </div>
+    <div class="grid-cards">${cards.map(([k,v,cls,n]) =>
+      `<div class="stat ${cls}"><div class="k">${esc(k)}</div><div class="v mono">${esc(v)}</div><div class="n">${esc(n)}</div></div>`).join("")}</div>
+
+    <div class="panel">
+      <div class="panel-h"><h2>Per exception class</h2><span class="count">recall and precision by rule</span></div>
+      <div class="scroll-x"><table class="t">
+        <thead><tr><th>Rule</th><th>Severity</th><th class="num">Cases</th><th class="num">Recall</th><th class="num">Precision</th><th class="num">FP</th><th class="num">FN</th></tr></thead>
+        <tbody>${d.per_code.map(c => `<tr>
+          <td><div style="font-weight:500">${esc(c.label)}</div><div class="mono" style="font-size:11px;color:var(--muted)">${esc(c.code)}</div></td>
+          <td><span class="tag ${esc(c.severity)}">${esc(c.severity)}</span></td>
+          <td class="num">${c.support}</td>
+          <td class="num">${c.recall.toFixed(2)}</td>
+          <td class="num">${c.precision.toFixed(2)}</td>
+          <td class="num">${c.fp}</td><td class="num">${c.fn}</td></tr>`).join("")}</tbody>
+      </table></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-h"><h2>Field-by-field extraction</h2><span class="count">the model layer, scored alone</span></div>
+      <div class="scroll-x"><table class="t">
+        <thead><tr><th>Field</th><th class="num">Accuracy</th><th class="num">n</th><th class="num">Missed</th><th class="num">Wrong</th><th class="num">Wrong &amp; confident</th></tr></thead>
+        <tbody>${x.per_field.sort((a,b)=>a.accuracy-b.accuracy).map(f => `<tr>
+          <td class="mono">${esc(f.field)}</td>
+          <td class="num">${f.accuracy.toFixed(3)}</td>
+          <td class="num">${f.n}</td><td class="num">${f.missed}</td><td class="num">${f.wrong}</td>
+          <td class="num">${f.wrong_but_confident}</td></tr>`).join("")}</tbody>
+      </table></div>
+    </div>
+
+    <div class="note">
+      <p><b>Read this number honestly.</b> The labels and the engine were built together against a synthetic corpus, so a perfect score measures internal consistency, not field performance. What it is good for is regression: change a tolerance or a rule and the cases that move tell you what you actually changed.</p>
+      <p>The corpus is the useful artefact. Every rule in the catalogue is exercised, and it includes the cases a naive matcher gets wrong in the expensive direction — a unit conversion that looks like a variance, a partial delivery that looks like under-billing, a 2% overcharge on a six-figure line.</p>
+    </div>`;
+}
+
+/* --- policy tab ---------------------------------------------------- */
+function renderPolicy() {
+  const p = S.policy;
+  const counts = {auto_approve:0, approve_with_review:0, block_for_payment:0, reject:0};
+  S.rows.forEach(r => counts[r.decision]++);
+  document.getElementById("tab-policy").innerHTML = `
+    <div class="note">
+      <p><b>Matching answers whether the invoice is consistent with the PO and the goods receipt. Policy answers what this company does about it, and who signs.</b> The first is the same everywhere; the second is configuration finance should be able to change without a release.</p>
+    </div>
+
+    <div class="panel">
+      <div class="panel-h"><h2>Auto-approve limit</h2><span class="count">re-runs the approval ladder over all ${S.rows.length} invoices</span></div>
+      <div class="sec">
+        <div class="policy-grid">
+          <div class="slider">
+            <label for="autolimit">A clean invoice at or below this value posts without a human</label>
+            <input type="range" id="autolimit" min="0" max="50000" step="500" value="${S.autoLimit}">
+            <div class="val mono" id="autolimit-val">${money(S.autoLimit)}</div>
+          </div>
+          <div>
+            <div class="spectrum" id="pspectrum" style="margin-top:26px"></div>
+            <div class="legend" id="plegend"></div>
+          </div>
+        </div>
+        <p style="font-size:12.5px;color:var(--ink-2);margin:16px 0 0">
+          Raising it buys throughput and spends control. What it never touches are the non-waivable rules below:
+          a duplicate or a changed bank account is blocked at any value, because small-ticket is exactly how those attacks work.
+        </p>
+      </div>
+    </div>
+
+    <div class="policy-grid">
+      <div class="panel">
+        <div class="panel-h"><h2>Tolerance keys</h2></div>
+        <div class="scroll-x"><table class="t">
+          <thead><tr><th>Key</th><th>Checks</th><th class="num">Absolute</th><th class="num">Percentage</th></tr></thead>
+          <tbody>${Object.values(p.tolerances).map(t => `<tr>
+            <td class="mono">${esc(t.key)}</td><td>${esc(t.label)}</td>
+            <td class="num">${Number(t.abs_limit) ? esc(t.abs_limit) : "—"}</td>
+            <td class="num">${Number(t.pct_limit) ? esc(t.pct_limit) + "%" : "—"}</td></tr>`).join("")}</tbody>
+        </table></div>
+        <div class="sec" style="border-top:1px solid var(--line)">
+          <p style="font-size:12.5px;color:var(--ink-2);margin:0">A variance passes only if <b>every</b> configured limit passes. Read as alternatives, a 35% overcharge on a small line would slip through on the absolute limit and a 2% overcharge on a six-figure line would slip through on the percentage. Read together, the percentage catches proportionate abuse and the absolute figure caps the exposure.</p>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-h"><h2>Approval ladder</h2></div>
+        <div class="scroll-x"><table class="t">
+          <thead><tr><th class="num">Up to</th><th>Owner</th><th class="num">SLA</th></tr></thead>
+          <tbody>${p.tiers.map(t => `<tr><td class="num">${esc(money(t.up_to))}</td><td>${esc(t.role)}</td><td class="num">${t.sla_hours}h</td></tr>`).join("")}</tbody>
+        </table></div>
+        <div class="sec" style="border-top:1px solid var(--line)">
+          <h3>Never auto-approved, at any value</h3>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">${p.never_auto_approve.map(c => `<span class="tag fraud mono">${esc(c)}</span>`).join("")}</div>
+        </div>
+      </div>
+    </div>`;
+
+  const slider = document.getElementById("autolimit");
+  const paint = () => {
+    const n = S.rows.length || 1;
+    const c = {auto_approve:0, approve_with_review:0, block_for_payment:0, reject:0};
+    S.rows.forEach(r => c[r.decision]++);
+    document.getElementById("pspectrum").innerHTML = Object.keys(DEC)
+      .map(k => c[k] ? `<span style="width:${c[k]/n*100}%;background:var(${DECVAR[k]})"></span>` : "").join("");
+    document.getElementById("plegend").innerHTML = Object.keys(DEC)
+      .map(k => `<span><i class="dot" style="background:var(${DECVAR[k]})"></i>${DEC[k].label} <b>${c[k]}</b></span>`).join("");
+  };
+  paint();
+  slider.oninput = () => {
+    S.autoLimit = Number(slider.value);
+    document.getElementById("autolimit-val").textContent = money(S.autoLimit);
+    applyPolicy(); paint(); renderTop(); renderQueue();
+    if (S.sel) api("/api/invoice/" + S.sel).then(renderDetail);
+  };
+}
+
+/* --- how it works -------------------------------------------------- */
+function renderHow() {
+  document.getElementById("tab-how").innerHTML = `
+    <div class="policy-grid">
+      <div class="panel"><div class="panel-h"><h2>What the model does</h2></div><div class="sec">
+        <p style="margin:0 0 10px">Turn a document into fields, each with a confidence. Read a vendor name off a bad scan, find the PO reference in a table that has no header row, notice that a total sits under a stamp.</p>
+        <p style="margin:0;color:var(--muted);font-size:12.5px">It makes no judgements. It never compares anything to a purchase order and never decides whether an invoice is payable.</p>
+      </div></div>
+      <div class="panel"><div class="panel-h"><h2>What the code does</h2></div><div class="sec">
+        <p style="margin:0 0 10px">Everything downstream. Net received quantity after reversals, cumulative invoiced quantity across documents, unit conversion, price variance against the PO net price, tolerance checks, duplicate detection, the approval ladder.</p>
+        <p style="margin:0;color:var(--muted);font-size:12.5px">Given the same inputs it returns the same answer every time, and it can point at the numbers that produced it.</p>
+      </div></div>
+    </div>
+
+    <div class="panel"><div class="panel-h"><h2>Where the line sits, and why</h2></div><div class="sec">
+      <p style="margin:0 0 10px">A language model is the right tool for reading <span class="mono">148.50</span> off a smudged line and the wrong tool for deciding whether <span class="mono">148.90</span> is within 3% of it. Put the boundary anywhere else and you get a system that is confidently wrong in a way nobody can audit.</p>
+      <p style="margin:0 0 10px">The confidence score is what carries the handover. When a decision-critical field is below threshold the document goes to a human instead of being trusted — the failure mode that matters is not an unreadable field, it is a field read confidently and wrongly, which is why that count is reported on its own in the evaluation.</p>
+      <p style="margin:0">Swapping the extractor for a different model must not require touching the matching rules. If it ever does, the boundary has leaked.</p>
+    </div></div>
+
+    <div class="panel"><div class="panel-h"><h2>The cases worth arguing about</h2></div>
+      <div class="scroll-x"><table class="t">
+        <thead><tr><th>Scenario</th><th>Why a naive matcher gets it wrong</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">uom_convertible</td><td>Ordered 5 BOX, billed 60 EA. A field-by-field comparison raises a false exception on a correct invoice.</td></tr>
+          <tr><td class="mono">partial_gr_clean</td><td>Half delivered, half invoiced. Correct, and must not be flagged.</td></tr>
+          <tr><td class="mono">second_invoice_overrun</td><td>80% already billed and they want another 50%. Only cumulative tracking catches it.</td></tr>
+          <tr><td class="mono">gr_reversal</td><td>Goods received then partly reversed. Net received is what counts, not the first receipt.</td></tr>
+          <tr><td class="mono">price_variance_absolute_cap</td><td>2% over — inside the percentage limit — but four figures of real money.</td></tr>
+          <tr><td class="mono">bank_change_small_value</td><td>Deliberately under the auto-approve limit. A value-only policy pays it.</td></tr>
+          <tr><td class="mono">near_duplicate</td><td>Invoice number changed by one character; vendor, date and amount identical.</td></tr>
+          <tr><td class="mono">ocr_digit_slip</td><td>A confident, plausible, wrong unit price. Nothing on the document looks suspicious.</td></tr>
+          <tr><td class="mono">service_two_way_match</td><td>No goods receipt expected by design. Not a missing GR.</td></tr>
+        </tbody>
+      </table></div>
+    </div>
+
+    <div class="note">
+      <p>Master data, purchase orders, goods receipts and invoices are synthetic and shaped after SAP MM/FI tables — EKKO and EKPO for the order, EKBE and MSEG for receipt history, RBKP and RSEG for the incoming invoice — so the rules port to a real system rather than to a demo schema.</p>
+      ${EMBED ? `<p>This page is a baked copy of one run, so the queue is fixed. The deployed application additionally takes real invoice PDFs: drop one on the queue, Claude reads it as a document — a scan with no text layer included — and the same engine matches it against the same purchase order and goods-receipt master. Uploaded documents are never scored in the evaluation, because nobody labelled them.</p>` : ""}
+    </div>`;
+}
+
+/* --- tabs ---------------------------------------------------------- */
+document.querySelectorAll("nav.tabs button").forEach(b => {
+  b.onclick = () => {
+    document.querySelectorAll("nav.tabs button").forEach(x => x.setAttribute("aria-selected", x === b));
+    ["queue","evals","policy","how"].forEach(t =>
+      document.getElementById("tab-" + t).classList.toggle("hidden", t !== b.dataset.tab));
+    if (b.dataset.tab === "evals") renderEvals();
+    if (b.dataset.tab === "policy") renderPolicy();
+    if (b.dataset.tab === "how") renderHow();
+  };
+});
+
+document.getElementById("filters").querySelectorAll(".chip").forEach(c => {
+  c.onclick = () => {
+    S.filter = c.dataset.f;
+    document.getElementById("filters").querySelectorAll(".chip")
+      .forEach(x => x.setAttribute("aria-pressed", x === c));
+    renderQueue();
+  };
+});
+document.getElementById("search").oninput = e => { S.q = e.target.value; renderQueue(); };
+
+/* --- upload -------------------------------------------------------- */
+function setupUpload(health) {
+  const dz = document.getElementById("dropzone");
+  if (EMBED) return;                      // no server behind the published demo
+  dz.classList.remove("hidden");
+
+  const input  = document.getElementById("fileinput");
+  const idle   = dz.querySelector(".dz-idle");
+  const busy   = dz.querySelector(".dz-busy");
+  const errBox = document.getElementById("dz-err");
+  const status = document.getElementById("dz-status");
+  const sub    = document.getElementById("dz-sub");
+
+  if (!health.uploads_enabled) {
+    dz.classList.add("disabled");
+    document.getElementById("dz-browse").disabled = true;
+    sub.textContent = "Set ANTHROPIC_API_KEY on the server to read real documents. Everything else on this page works without it.";
+    return;
+  }
+  sub.textContent = `Claude ${health.upload_model} reads the document, then the same engine matches it against the PO and goods-receipt master. PDF or image, up to ${health.max_upload_mb} MB.`;
+
+  const showErr = msg => {
+    errBox.textContent = msg; errBox.classList.remove("hidden");
+    busy.classList.add("hidden"); idle.classList.remove("hidden");
+  };
+
+  async function send(file) {
+    if (!file) return;
+    errBox.classList.add("hidden");
+    idle.classList.add("hidden"); busy.classList.remove("hidden");
+    status.textContent = `Reading ${file.name}…`;
+    try {
+      const res = await fetch("/api/upload", {
+        method: "POST",
+        headers: {"Content-Type": file.type || "application/pdf", "X-Filename": file.name},
+        body: file
+      });
+      const out = await res.json();
+      if (!res.ok) return showErr(out.error || "The document could not be read.");
+      const [summary, queue] = await Promise.all([api("/api/summary"), api("/api/queue")]);
+      S.summary = summary;
+      S.rows = queue.rows.map(r => ({...r, severities: r.severities || []}));
+      applyPolicy(); renderTop(); renderQueue();
+      busy.classList.add("hidden"); idle.classList.remove("hidden");
+      select(out.doc_id);
+    } catch (e) {
+      showErr("Upload failed: " + e.message);
+    }
+  }
+
+  document.getElementById("dz-browse").onclick = () => input.click();
+  input.onchange = () => { send(input.files[0]); input.value = ""; };
+  ["dragenter","dragover"].forEach(ev => dz.addEventListener(ev, e => {
+    e.preventDefault(); dz.classList.add("over");
+  }));
+  ["dragleave","drop"].forEach(ev => dz.addEventListener(ev, e => {
+    e.preventDefault(); dz.classList.remove("over");
+  }));
+  dz.addEventListener("drop", e => send(e.dataTransfer.files[0]));
+}
+
+/* --- boot ---------------------------------------------------------- */
+(async function boot() {
+  const [summary, evals, policy, queue] = await Promise.all([
+    api("/api/summary"), api("/api/evals"), api("/api/policy"), api("/api/queue")
+  ]);
+  S.summary = summary; S.evals = evals; S.policy = policy;
+  if (!EMBED) { try { setupUpload(await api("/api/health")); } catch (e) {} }
+  S.rows = queue.rows.map(r => ({...r, severities: r.severities || []}));
+  S.autoLimit = Number(policy.auto_approve_limit);
+  applyPolicy();
+  renderTop();
+  renderQueue();
+  // Open on something worth looking at: the page at rest should show the
+  // system doing its job, not the first row alphabetically.
+  const first = S.rows.find(r => r.severities.includes("fraud"))
+             || S.rows.find(r => r.exception_count > 0)
+             || S.rows[0];
+  if (first) select(first.doc_id);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,4 @@
+# The application core uses only the Python standard library.
+# reportlab is optional: it renders sample invoice PDFs (GET /api/sample/<id>.pdf
+# and `cli.py export --pdf`). Everything else works without it.
+reportlab>=4.0
