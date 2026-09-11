@@ -178,8 +178,11 @@ def cmd_serve(args) -> int:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="3wm", description="Invoice / PO / GR three-way match")
-    ap.add_argument("--extractor", default="mock", choices=["mock", "anthropic"],
-                    help="field extraction backend (default: mock, offline and reproducible)")
+    ap.add_argument("--extractor", default="mock",
+                    choices=["mock", "anthropic", "openrouter", "auto"],
+                    help="field extraction backend. mock (default) is offline and "
+                         "reproducible; anthropic and openrouter are model-backed; "
+                         "auto picks whichever API key is set")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("run", help="process the dataset and print a summary")

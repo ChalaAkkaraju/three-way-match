@@ -22,15 +22,17 @@ python3 -m app.cli evals             # score against the labelled golden set
 python3 -m app.cli show INV-0020     # one invoice end to end, with the trace
 python3 -m app.cli serve             # reviewer UI on http://localhost:8000
 python3 -m app.cli export out --pdf  # run.json plus rendered documents
-python3 -m tests.test_matching       # 47 tests
+python3 -m tests.test_matching       # 52 tests
 ```
 
 To read real invoice PDFs, set a key first:
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...   # Windows: set ANTHROPIC_API_KEY=sk-ant-...
+export ANTHROPIC_API_KEY=sk-ant-...    # or OPENROUTER_API_KEY=sk-or-...
 python3 -m app.cli serve
 ```
+
+On Windows PowerShell: `$env:OPENROUTER_API_KEY = "sk-or-..."`
 
 Build a single self-contained HTML file with the whole run embedded — no server,
 nothing to deploy:
@@ -64,28 +66,55 @@ threshold the document goes to a human instead of being trusted. The failure
 mode that matters is not an unreadable field — it is a field read *confidently
 and wrongly*, which is why the evaluation reports that count on its own.
 
-Two extraction backends:
+Three extraction backends:
 
 - `--extractor mock` — offline, reproducible, deliberately imperfect. Injects
   illegible fields, dropped fields and confident OCR digit slips from a
   per-case noise profile. This is the default and what the tests run on.
-- `--extractor anthropic` — sends the document to Claude and parses structured
-  JSON back, with a confidence per field. Needs `ANTHROPIC_API_KEY`; no SDK,
-  just `urllib`.
+- `--extractor anthropic` — the Claude Messages API. Needs `ANTHROPIC_API_KEY`.
+- `--extractor openrouter` — the same models billed through an OpenRouter
+  account. Needs `OPENROUTER_API_KEY`.
+
+`--extractor auto` picks whichever key is set, Anthropic first. No SDK for any
+of them, just `urllib`.
+
+The two model backends differ **only** in transport and in how a file is
+packaged. The prompt, the JSON contract and the parsing live in
+`ModelExtractor` and are shared, because which company bills you for the
+tokens is a delivery detail. A test asserts both produce an identical `Invoice`
+from an identical model reply.
+
+On OpenRouter, PDF handling is chosen with `OPENROUTER_PDF_ENGINE`:
+
+| engine | what it does | cost |
+| --- | --- | --- |
+| `native` (default) | the model reads the file itself — same as the Anthropic path | input tokens |
+| `cloudflare-ai` | converts the PDF to markdown first, so the model never sees the page | free |
+| `mistral-ocr` | a real OCR pass | per page |
+
+`native` is the default deliberately. `cloudflare-ai` is free but throws away
+the page layout before the model sees it, and on an invoice a line table *is*
+layout — which column a number sits in is the difference between a quantity
+and a unit price.
+
+Leave `OPENROUTER_MODEL` unset and the app asks OpenRouter's catalogue for a
+file-capable Claude model at startup. Model slugs get renamed; hard-coding one
+means a working deployment breaks later with an error that looks like a bug in
+this code.
 
 ### Reading a real invoice
 
-Drop a PDF onto the queue in the reviewer UI. It goes up as a `document`
-content block, so a scan with no text layer is read the same way a
+Drop a PDF onto the queue in the reviewer UI. It goes to the model as a file,
+not as pre-extracted text, so a scan with no text layer is read the same way a
 born-digital PDF is; images work too. The extracted invoice then goes through
 **the same match engine, the same policy engine and the same PO/GR master** as
 the corpus — if an uploaded document were matched by different rules, the
 evaluation numbers would describe a system that does not exist. A test asserts
 the two paths agree.
 
-Uploads need `ANTHROPIC_API_KEY` on the server. Without it every other part of
-the app still works and the UI says so on the drop zone rather than failing
-when you use it.
+Uploads need `ANTHROPIC_API_KEY` **or** `OPENROUTER_API_KEY` on the server.
+Without either, every other part of the app still works and the UI says so on
+the drop zone rather than failing when you use it.
 
 Two honest caveats:
 
@@ -190,7 +219,7 @@ Locally:
 
 ```bash
 docker build -t three-way-match .
-docker run -p 8000:8000 -e ANTHROPIC_API_KEY=sk-ant-... three-way-match
+docker run -p 8000:8000 -e OPENROUTER_API_KEY=sk-or-... three-way-match
 ```
 
 ### Railway
@@ -202,8 +231,9 @@ configuration beyond the variables:
 2. In your Railway project: **New → GitHub Repo**, pick it. Railway sees the
    Dockerfile and builds it. The build runs the test suite and fails the deploy
    if the match engine is broken.
-3. **Variables → New Variable**: `ANTHROPIC_API_KEY`. Optional — without it the
-   app runs on the corpus and the drop zone reports uploads as disabled.
+3. **Variables → New Variable**: `OPENROUTER_API_KEY` (or `ANTHROPIC_API_KEY`).
+   Optional — without one the app runs on the corpus and the drop zone reports
+   uploads as disabled.
 4. **Settings → Networking → Generate Domain**.
 
 `PORT` is injected by Railway and read by the server; don't set it yourself.
@@ -231,7 +261,8 @@ app/
   config.py      tolerance keys, approval ladder, UoM dimensions
   generator.py   synthetic SAP-shaped corpus with labelled failure cases
   documents.py   render an invoice to text or PDF, so extraction has real input
-  extraction.py  the model boundary: fields plus confidence, nothing else
+  extraction.py  the model boundary: fields plus confidence, nothing else.
+                 Mock, Anthropic and OpenRouter over one shared contract
   store.py       read model over master data; vendor resolution, duplicate ledger
   matching.py    the three-way match engine. all arithmetic, no model
   policy.py      decision ladder, approval routing, payable amount

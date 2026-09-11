@@ -32,8 +32,8 @@ from .config import DEFAULT_POLICY, Policy
 from .documents import render_pdf, render_text
 from .evals import Evaluator
 from .extraction import (
-    AnthropicExtractor,
     ExtractionError,
+    available_backend,
     get_document_extractor,
     has_api_key,
 )
@@ -66,6 +66,7 @@ class State:
         self.decisions: Dict[str, Dict[str, Any]] = {}
         self.uploads: List[Any] = []          # extracted Invoice objects, in arrival order
         self.upload_meta: Dict[str, Dict[str, Any]] = {}
+        self._doc_extractor = None
         self.rebuild()
 
     def rebuild(self) -> None:
@@ -92,6 +93,25 @@ class State:
         # The evaluation is scored on the labelled corpus only.
         self.report = Evaluator().run(self.dataset.cases, self.results)
         self.summary = summarise(self.all_results)
+
+    def document_extractor(self):
+        """Built once and kept. The OpenRouter backend asks the provider for
+        its model catalogue on construction, and doing that per upload would
+        add a round trip to every document for no new information."""
+        if getattr(self, "_doc_extractor", None) is None:
+            self._doc_extractor = get_document_extractor()
+        return self._doc_extractor
+
+    def upload_model(self) -> Optional[str]:
+        """What the drop zone should say it uses, without paying for model
+        discovery on a health check."""
+        if available_backend() is None:
+            return None
+        if getattr(self, "_doc_extractor", None) is not None:
+            return self._doc_extractor.model
+        return (os.environ.get("OPENROUTER_MODEL")
+                or os.environ.get("ANTHROPIC_MODEL")
+                or "the provider's current Claude model")
 
     def add_upload(self, result, filename: str) -> None:
         self.uploads.insert(0, result.invoice)
@@ -222,17 +242,16 @@ class Handler(BaseHTTPRequestHandler):
 
         if not has_api_key():
             return self._json({
-                "error": "Reading a real document needs a Claude API key. "
-                         "Set ANTHROPIC_API_KEY on the server and restart.",
+                "error": "Reading a real document needs a model API key. Set "
+                         "ANTHROPIC_API_KEY or OPENROUTER_API_KEY on the server.",
                 "code": "no_api_key",
             }, 503)
 
         try:
             with STATE.lock:
                 doc_id = STATE.next_upload_id()
-                extractor = get_document_extractor()
                 result = ingest.ingest_document(
-                    STATE.pipeline, extractor, doc_id, data, filename, declared)
+                    STATE.pipeline, STATE.document_extractor(), doc_id, data, filename, declared)
                 STATE.add_upload(result, filename)
         except ExtractionError as e:
             return self._json({"error": str(e), "code": "extraction_failed"}, 422)
@@ -252,14 +271,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, fh.read(), "text/html; charset=utf-8")
 
         if path == "/api/health":
+            backend = available_backend()
             return self._json({
                 "ok": True,
                 "invoices": len(STATE.all_results),
                 "extractor": STATE.extractor,
                 # The UI needs to know whether the upload path can work at all,
                 # so it can say so before someone drags a file onto it.
-                "uploads_enabled": has_api_key(),
-                "upload_model": AnthropicExtractor.__init__.__defaults__[0],
+                "uploads_enabled": backend is not None,
+                "upload_backend": backend,
+                "upload_model": STATE.upload_model(),
                 "max_upload_mb": ingest.MAX_BYTES // 1024 // 1024,
             })
 
@@ -337,8 +358,9 @@ def serve(host: str = "0.0.0.0", port: int = 8000, extractor: str = "mock") -> N
     print(f"\n  Reviewer UI   http://{shown}:{port}")
     print(f"  Invoices      {len(STATE.results)} processed with the '{extractor}' extractor")
     print(f"  Touchless     {STATE.summary['touchless_rate']:.1%}")
-    print("  PDF uploads   " + ("enabled" if has_api_key()
-                                else "disabled (set ANTHROPIC_API_KEY to enable)"))
+    backend = available_backend()
+    print("  PDF uploads   " + (f"enabled via {backend}" if backend else
+                                "disabled (set ANTHROPIC_API_KEY or OPENROUTER_API_KEY)"))
     print("  Ctrl-C to stop\n")
     try:
         srv.serve_forever()

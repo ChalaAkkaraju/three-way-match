@@ -623,6 +623,98 @@ def _():
     assert st.report["decisions"]["cases"] == baseline_cases
 
 
+print("\nextraction backends")
+
+
+@check("OpenRouter packages a PDF as a file part with a data URL")
+def _():
+    from app.extraction import OpenRouterExtractor
+
+    ex = OpenRouterExtractor(api_key="test", model="anthropic/claude-sonnet-4.5")
+    parts = ex._file_block(b"%PDF-1.4 x", "application/pdf", "scan.pdf")
+    part = next(p for p in parts if p["type"] == "file")
+    assert part["file"]["filename"] == "scan.pdf"
+    assert part["file"]["file_data"].startswith("data:application/pdf;base64,")
+
+
+@check("OpenRouter packages an image as an image_url part")
+def _():
+    from app.extraction import OpenRouterExtractor
+
+    ex = OpenRouterExtractor(api_key="test", model="m")
+    parts = ex._file_block(b"\x89PNG", "image/png", "scan.png")
+    part = next(p for p in parts if p["type"] == "image_url")
+    assert part["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+@check("both backends turn the same model reply into the same invoice")
+def _():
+    from app.extraction import AnthropicExtractor, OpenRouterExtractor
+
+    raw = {
+        "xblnr": "NOR-1", "vendor_name": "Northwind Industrial Supply LLC",
+        "bldat": "2026-05-25", "waers": "usd",
+        "net_total": "1,000.00", "tax_total": "80.00", "gross_total": "$1,080.00",
+        "bank_account_last4": "4417",
+        "lines": [{"line_no": 1, "description": "Widget", "ebeln": "4500001001",
+                   "ebelp": "10", "menge": "100", "meins": "ea",
+                   "unit_price": "10.00", "amount": "1000.00", "tax_code": "i0"}],
+        "confidence": {"header": {"gross_total": 0.9}, "lines": {"1": {"menge": 0.9}}},
+    }
+    a = AnthropicExtractor(api_key="k")._to_invoice(raw, "X-1")
+    o = OpenRouterExtractor(api_key="k", model="m")._to_invoice(raw, "X-1")
+    assert a.to_dict() == o.to_dict(), "the parsing contract must not depend on the provider"
+    # and the coercions actually happened
+    assert a.gross_total == money("1080.00"), a.gross_total
+    assert a.waers == "USD"
+    assert a.lines[0].ebelp == "00010", a.lines[0].ebelp
+    assert a.lines[0].meins == "EA"
+    assert a.lifnr is None, "vendor number is master data, never read off the page"
+
+
+@check("backend selection prefers Anthropic and reports honestly when absent")
+def _():
+    import os
+
+    from app.extraction import available_backend
+
+    saved = {k: os.environ.get(k) for k in ("ANTHROPIC_API_KEY", "OPENROUTER_API_KEY")}
+    try:
+        for k in saved:
+            os.environ.pop(k, None)
+        assert available_backend() is None
+        os.environ["OPENROUTER_API_KEY"] = "x"
+        assert available_backend() == "openrouter"
+        os.environ["ANTHROPIC_API_KEY"] = "x"
+        assert available_backend() == "anthropic"
+    finally:
+        for k, v in saved.items():
+            os.environ.pop(k, None)
+            if v is not None:
+                os.environ[k] = v
+
+
+@check("a missing key is an error the caller can show, not a crash")
+def _():
+    import os
+
+    from app.extraction import ExtractionError, get_document_extractor
+
+    saved = {k: os.environ.get(k) for k in ("ANTHROPIC_API_KEY", "OPENROUTER_API_KEY")}
+    try:
+        for k in saved:
+            os.environ.pop(k, None)
+        try:
+            get_document_extractor()
+            raise AssertionError("should have refused")
+        except ExtractionError as e:
+            assert "OPENROUTER_API_KEY" in str(e)
+    finally:
+        for k, v in saved.items():
+            if v is not None:
+                os.environ[k] = v
+
+
 print()
 print("=" * 60)
 if FAILURES:

@@ -839,10 +839,11 @@ function setupUpload(health) {
   if (!health.uploads_enabled) {
     dz.classList.add("disabled");
     document.getElementById("dz-browse").disabled = true;
-    sub.textContent = "Set ANTHROPIC_API_KEY on the server to read real documents. Everything else on this page works without it.";
+    sub.textContent = "Set ANTHROPIC_API_KEY or OPENROUTER_API_KEY on the server to read real documents. Everything else on this page works without it.";
     return;
   }
-  sub.textContent = `Claude ${health.upload_model} reads the document, then the same engine matches it against the PO and goods-receipt master. PDF or image, up to ${health.max_upload_mb} MB.`;
+  const via = health.upload_backend === "openrouter" ? " via OpenRouter" : "";
+  sub.textContent = `${health.upload_model}${via} reads the document, then the same engine matches it against the PO and goods-receipt master. PDF or image, up to ${health.max_upload_mb} MB.`;
 
   const showErr = msg => {
     errBox.textContent = msg; errBox.classList.remove("hidden");

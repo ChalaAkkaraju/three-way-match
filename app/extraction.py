@@ -5,20 +5,25 @@ The only job of this layer is to turn a document into structured fields
 whether an invoice is payable, never compares anything to a PO, never
 applies a tolerance. Everything downstream of here is deterministic code.
 
-Two backends:
+Three backends:
 
-  MockExtractor       reproducible, offline, and deliberately imperfect.
-                      Reads the generator's ground truth and applies the
-                      per-case noise profile (illegible fields, dropped
-                      fields, OCR digit slips). Use this for development
-                      and for regression runs where you need the same
-                      answer every time.
+  MockExtractor        reproducible, offline, and deliberately imperfect.
+                       Reads the generator's ground truth and applies the
+                       per-case noise profile (illegible fields, dropped
+                       fields, OCR digit slips). Use this for development
+                       and for regression runs where you need the same
+                       answer every time.
 
-  AnthropicExtractor  sends the rendered document to a Claude model and
-                      parses structured JSON back. Use this to measure
-                      what a real extractor does to your downstream
-                      numbers. Requires ANTHROPIC_API_KEY; no third-party
-                      SDK, just urllib.
+  AnthropicExtractor   the Claude Messages API. Requires ANTHROPIC_API_KEY.
+
+  OpenRouterExtractor  the same models billed through an OpenRouter
+                       account. Requires OPENROUTER_API_KEY.
+
+The last two differ only in transport and in how a file is packaged; the
+prompt, the JSON contract and the parsing are shared in ModelExtractor,
+because which company bills you for the tokens is a delivery detail.
+
+No third-party SDK anywhere -- just urllib.
 
 Swapping backends must not require touching matching.py or policy.py. If
 it ever does, the boundary has leaked.
@@ -197,106 +202,39 @@ class ExtractionError(RuntimeError):
     got fields back."""
 
 
-class AnthropicExtractor(Extractor):
-    """Calls the Claude Messages API directly over urllib -- no SDK.
+class ModelExtractor(Extractor):
+    """Shared behaviour for every model-backed extractor.
 
-    Two inputs are supported and both go through the same prompt and the
-    same parser:
+    A subclass supplies transport (`_call`) and how a document is packaged
+    for that provider (`_text_block`, `_file_block`). Everything above that
+    -- the prompt, the JSON contract, the coercion into an Invoice -- is
+    identical, because which company bills you for the tokens is a delivery
+    detail and the contract with the rest of the system is not.
+
+    Two inputs, both through the same prompt and the same parser:
 
         extract(case)                 rendered text, used by the eval harness
         extract_document(id, bytes)   a real PDF or image, used by uploads
-
-    PDFs go up as a `document` content block. Every page is rasterised on
-    Anthropic's side as well as read as text, so a scanned invoice with no
-    text layer works the same way a born-digital one does -- which is the
-    whole reason this path exists.
     """
 
-    name = "anthropic"
+    name = "model"
+    model = ""
 
     PDF_MEDIA = "application/pdf"
     IMAGE_MEDIA = {"image/png", "image/jpeg", "image/gif", "image/webp"}
 
-    def __init__(
-        self,
-        model: str = "claude-sonnet-5",
-        api_key: Optional[str] = None,
-        max_tokens: int = 4000,
-        timeout: int = 120,
-    ) -> None:
-        self.model = model
-        self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
-        self.max_tokens = max_tokens
-        self.timeout = timeout
-        if not self.api_key:
-            raise ExtractionError(
-                "ANTHROPIC_API_KEY is not set. Run with --extractor mock, or set the key."
-            )
-
-    # -- transport --------------------------------------------------------
+    # -- supplied by subclasses -------------------------------------------
 
     def _call(self, content: List[Dict[str, Any]]) -> Dict[str, Any]:
-        payload = {
-            "model": self.model,
-            "max_tokens": self.max_tokens,
-            "temperature": 0,
-            "system": EXTRACTION_SCHEMA_PROMPT,
-            "messages": [
-                {"role": "user", "content": content},
-                # Prefill an opening brace so the reply starts as JSON.
-                {"role": "assistant", "content": [{"type": "text", "text": "{"}]},
-            ],
-        }
-        req = urllib.request.Request(
-            "https://api.anthropic.com/v1/messages",
-            data=json.dumps(payload).encode(),
-            headers={
-                "content-type": "application/json",
-                "x-api-key": self.api_key,
-                "anthropic-version": "2023-06-01",
-            },
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                body = json.loads(resp.read().decode())
-        except urllib.error.HTTPError as e:
-            detail = e.read().decode(errors="replace")[:400]
-            raise ExtractionError(f"Claude API returned {e.code}: {detail}") from None
-        except Exception as e:
-            raise ExtractionError(f"could not reach the Claude API: {e}") from None
-
-        text = "{" + "".join(b.get("text", "") for b in body.get("content", []))
-        m = re.search(r"\{.*\}", text, re.S)
-        try:
-            return json.loads(m.group(0) if m else text)
-        except json.JSONDecodeError:
-            raise ExtractionError("the model's reply was not valid JSON") from None
-
-    # -- inputs -----------------------------------------------------------
+        raise NotImplementedError
 
     def _text_block(self, document_text: str) -> List[Dict[str, Any]]:
-        return [{"type": "text", "text": f"<document>\n{document_text}\n</document>"}]
+        raise NotImplementedError
 
-    def _file_block(self, data: bytes, media_type: str) -> List[Dict[str, Any]]:
-        b64 = base64.standard_b64encode(data).decode()
-        if media_type == self.PDF_MEDIA:
-            block = {"type": "document",
-                     "source": {"type": "base64", "media_type": media_type, "data": b64}}
-        elif media_type in self.IMAGE_MEDIA:
-            block = {"type": "image",
-                     "source": {"type": "base64", "media_type": media_type, "data": b64}}
-        else:
-            raise ExtractionError(f"unsupported file type: {media_type}")
-        return [block, {"type": "text", "text": "Read this invoice and return the JSON object."}]
+    def _file_block(self, data: bytes, media_type: str, filename: str) -> List[Dict[str, Any]]:
+        raise NotImplementedError
 
-    @staticmethod
-    def _dec(v, fn):
-        if v in (None, "", "null"):
-            return None
-        try:
-            return fn(str(v).replace(",", "").replace("$", "").strip())
-        except Exception:
-            return None
+    # -- inputs ------------------------------------------------------------
 
     def extract(self, case: Any) -> Invoice:
         """Eval path: read the rendered document, never the ground truth."""
@@ -315,12 +253,34 @@ class AnthropicExtractor(Extractor):
         source_file: str = "",
         received_at: str = "",
     ) -> Invoice:
-        """Upload path: a real PDF or scan, with nothing else to fall back on."""
-        raw = self._call(self._file_block(data, media_type))
+        """Upload path: a real PDF or scan, with nothing to fall back on."""
+        filename = source_file or f"{doc_id}.pdf"
+        raw = self._call(self._file_block(data, media_type, filename))
         return self._to_invoice(raw, doc_id=doc_id, source_file=source_file,
                                 received_at=received_at)
 
-    # -- parsing ----------------------------------------------------------
+    # -- parsing -----------------------------------------------------------
+
+    @staticmethod
+    def _dec(v, fn):
+        if v in (None, "", "null"):
+            return None
+        try:
+            return fn(str(v).replace(",", "").replace("$", "").strip())
+        except Exception:
+            return None
+
+    @staticmethod
+    def _parse_json(text: str) -> Dict[str, Any]:
+        m = re.search(r"\{.*\}", text, re.S)
+        try:
+            return json.loads(m.group(0) if m else text)
+        except json.JSONDecodeError:
+            raise ExtractionError("the model's reply was not valid JSON") from None
+
+    @staticmethod
+    def _b64_data_url(data: bytes, media_type: str) -> str:
+        return f"data:{media_type};base64,{base64.standard_b64encode(data).decode()}"
 
     def _to_invoice(self, raw: Dict[str, Any], doc_id: str,
                     source_file: str = "", received_at: str = "") -> Invoice:
@@ -339,7 +299,8 @@ class AnthropicExtractor(Extractor):
                     ebelp=(str(rl.get("ebelp")).zfill(5) if rl.get("ebelp") else None),
                     menge=self._dec(rl.get("menge"), qty),
                     meins=(rl.get("meins") or "").strip().upper(),
-                    unit_price=self._dec(rl.get("unit_price"), lambda s: Decimal(s).quantize(Decimal("0.000001"))),
+                    unit_price=self._dec(rl.get("unit_price"),
+                                         lambda s: Decimal(s).quantize(Decimal("0.000001"))),
                     amount=self._dec(rl.get("amount"), money),
                     tax_code=(rl.get("tax_code") or "").strip().upper() or "??",
                     confidences={k: float(v) for k, v in (line_conf.get(str(ln)) or {}).items()},
@@ -369,19 +330,266 @@ class AnthropicExtractor(Extractor):
         return inv
 
 
+def _post_json(url: str, payload: Dict[str, Any], headers: Dict[str, str],
+               timeout: int, who: str) -> Dict[str, Any]:
+    req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode(errors="replace")[:500]
+        raise ExtractionError(f"{who} returned {e.code}: {detail}") from None
+    except Exception as e:
+        raise ExtractionError(f"could not reach {who}: {e}") from None
+
+
+class AnthropicExtractor(ModelExtractor):
+    """The Claude Messages API directly, over urllib -- no SDK.
+
+    PDFs go up as a `document` content block. Every page is read as text and
+    rasterised as an image on Anthropic's side, so a scan with no text layer
+    works exactly as a born-digital PDF does.
+    """
+
+    name = "anthropic"
+    ENDPOINT = "https://api.anthropic.com/v1/messages"
+
+    def __init__(
+        self,
+        model: Optional[str] = None,
+        api_key: Optional[str] = None,
+        max_tokens: int = 4000,
+        timeout: int = 120,
+    ) -> None:
+        self.model = model or os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5")
+        self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+        self.max_tokens = max_tokens
+        self.timeout = timeout
+        if not self.api_key:
+            raise ExtractionError(
+                "ANTHROPIC_API_KEY is not set. Run with --extractor mock, or set the key."
+            )
+
+    def _call(self, content: List[Dict[str, Any]]) -> Dict[str, Any]:
+        body = _post_json(
+            self.ENDPOINT,
+            {
+                "model": self.model,
+                "max_tokens": self.max_tokens,
+                "temperature": 0,
+                "system": EXTRACTION_SCHEMA_PROMPT,
+                "messages": [
+                    {"role": "user", "content": content},
+                    # Prefill an opening brace so the reply starts as JSON.
+                    {"role": "assistant", "content": [{"type": "text", "text": "{"}]},
+                ],
+            },
+            {
+                "content-type": "application/json",
+                "x-api-key": self.api_key,
+                "anthropic-version": "2023-06-01",
+            },
+            self.timeout,
+            "the Claude API",
+        )
+        return self._parse_json("{" + "".join(b.get("text", "") for b in body.get("content", [])))
+
+    def _text_block(self, document_text: str) -> List[Dict[str, Any]]:
+        return [{"type": "text", "text": f"<document>\n{document_text}\n</document>"}]
+
+    def _file_block(self, data: bytes, media_type: str, filename: str) -> List[Dict[str, Any]]:
+        b64 = base64.standard_b64encode(data).decode()
+        if media_type == self.PDF_MEDIA:
+            block = {"type": "document",
+                     "source": {"type": "base64", "media_type": media_type, "data": b64}}
+        elif media_type in self.IMAGE_MEDIA:
+            block = {"type": "image",
+                     "source": {"type": "base64", "media_type": media_type, "data": b64}}
+        else:
+            raise ExtractionError(f"unsupported file type: {media_type}")
+        return [block, {"type": "text", "text": "Read this invoice and return the JSON object."}]
+
+
+class OpenRouterExtractor(ModelExtractor):
+    """The same contract, billed through an OpenRouter account.
+
+    Useful when you already keep credit somewhere and would rather not open
+    a second billing relationship for one demo. The wire format is
+    OpenAI-shaped rather than Anthropic-shaped -- a PDF is a `file` content
+    part carrying a data URL, and PDF handling is selected by a plugin:
+
+        native        the model reads the file itself. Only for models with
+                      file support; billed as ordinary input tokens, no
+                      per-page fee. This is the default here because it is
+                      the one that matches what the Anthropic path does.
+        cloudflare-ai free; converts the PDF to markdown first, so the model
+                      never sees the page. Fine for clean digital invoices,
+                      weaker on scans and on anything where layout carries
+                      meaning -- which, on an invoice line table, it does.
+        mistral-ocr   a real OCR pass, charged per page.
+
+    Set OPENROUTER_PDF_ENGINE to change it.
+    """
+
+    name = "openrouter"
+    ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
+    MODELS_ENDPOINT = "https://openrouter.ai/api/v1/models"
+    FALLBACK_MODEL = "anthropic/claude-sonnet-4.5"
+
+    def __init__(
+        self,
+        model: Optional[str] = None,
+        api_key: Optional[str] = None,
+        max_tokens: int = 4000,
+        timeout: int = 180,
+        pdf_engine: Optional[str] = None,
+        app_url: str = "https://github.com/chalaakkaraju/three-way-match",
+        app_title: str = "Invoice Match Desk",
+    ) -> None:
+        self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
+        self.max_tokens = max_tokens
+        self.timeout = timeout
+        self.pdf_engine = pdf_engine or os.environ.get("OPENROUTER_PDF_ENGINE", "native")
+        self.app_url = app_url
+        self.app_title = app_title
+        if not self.api_key:
+            raise ExtractionError(
+                "OPENROUTER_API_KEY is not set. Run with --extractor mock, or set the key."
+            )
+        self.model = model or os.environ.get("OPENROUTER_MODEL", "") or self._discover_model()
+
+    # -- model selection ---------------------------------------------------
+
+    def _discover_model(self) -> str:
+        """Pick a file-capable Claude model from OpenRouter's own catalogue.
+
+        Model slugs move; hard-coding one means a working deployment breaks
+        on a rename with an error that looks like a bug in this code. Asking
+        the provider what it has costs one request at startup. If that fails,
+        fall back rather than refuse to start -- the wrong model name gives a
+        clear error at call time, and a server that will not boot gives none.
+        """
+        try:
+            req = urllib.request.Request(
+                self.MODELS_ENDPOINT,
+                headers={"Authorization": f"Bearer {self.api_key}"},
+            )
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                data = json.loads(resp.read().decode()).get("data") or []
+        except Exception:
+            return self.FALLBACK_MODEL
+
+        candidates = []
+        for m in data:
+            mid = m.get("id") or ""
+            if not mid.startswith("anthropic/") or ":" in mid:
+                continue
+            modalities = ((m.get("architecture") or {}).get("input_modalities") or [])
+            if "file" not in modalities:
+                continue
+            candidates.append(mid)
+        if not candidates:
+            return self.FALLBACK_MODEL
+
+        # Sonnet first: the read is a transcription task, not a reasoning one,
+        # so paying Opus rates per page buys very little here.
+        for want in ("sonnet", "haiku", "opus"):
+            hits = sorted((c for c in candidates if want in c), reverse=True)
+            if hits:
+                return hits[0]
+        return sorted(candidates, reverse=True)[0]
+
+    # -- transport ---------------------------------------------------------
+
+    def _call(self, content: List[Dict[str, Any]]) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "temperature": 0,
+            "messages": [
+                {"role": "system", "content": EXTRACTION_SCHEMA_PROMPT},
+                {"role": "user", "content": content},
+            ],
+        }
+        if any(p.get("type") == "file" for p in content):
+            payload["plugins"] = [{"id": "file-parser", "pdf": {"engine": self.pdf_engine}}]
+
+        body = _post_json(
+            self.ENDPOINT,
+            payload,
+            {
+                "content-type": "application/json",
+                "Authorization": f"Bearer {self.api_key}",
+                # OpenRouter uses these for attribution on their dashboard.
+                "HTTP-Referer": self.app_url,
+                "X-Title": self.app_title,
+            },
+            self.timeout,
+            "OpenRouter",
+        )
+        choices = body.get("choices") or []
+        if not choices:
+            raise ExtractionError(f"OpenRouter returned no completion: {str(body)[:300]}")
+        return self._parse_json(choices[0].get("message", {}).get("content") or "")
+
+    def _text_block(self, document_text: str) -> List[Dict[str, Any]]:
+        return [{"type": "text", "text": f"<document>\n{document_text}\n</document>"}]
+
+    def _file_block(self, data: bytes, media_type: str, filename: str) -> List[Dict[str, Any]]:
+        if media_type == self.PDF_MEDIA:
+            part = {"type": "file",
+                    "file": {"filename": filename,
+                             "file_data": self._b64_data_url(data, media_type)}}
+        elif media_type in self.IMAGE_MEDIA:
+            part = {"type": "image_url",
+                    "image_url": {"url": self._b64_data_url(data, media_type)}}
+        else:
+            raise ExtractionError(f"unsupported file type: {media_type}")
+        return [{"type": "text", "text": "Read this invoice and return the JSON object."}, part]
+
+
+# --------------------------------------------------------------------------
+# selection
+# --------------------------------------------------------------------------
+
+BACKENDS = {
+    "anthropic": ("ANTHROPIC_API_KEY", AnthropicExtractor),
+    "openrouter": ("OPENROUTER_API_KEY", OpenRouterExtractor),
+}
+
+
+def available_backend() -> Optional[str]:
+    """Which model-backed extractor this deployment can actually use.
+
+    Anthropic first when both keys are present: it is the shorter path to the
+    model, with no third party in between.
+    """
+    for name, (env, _) in BACKENDS.items():
+        if os.environ.get(env, "").strip():
+            return name
+    return None
+
+
 def has_api_key() -> bool:
-    return bool(os.environ.get("ANTHROPIC_API_KEY", "").strip())
+    return available_backend() is not None
 
 
 def get_extractor(kind: str = "mock", **kw) -> Extractor:
     if kind == "mock":
         return MockExtractor(**kw)
-    if kind == "anthropic":
-        return AnthropicExtractor(**kw)
+    if kind in BACKENDS:
+        return BACKENDS[kind][1](**kw)
+    if kind == "auto":
+        return get_document_extractor(**kw)
     raise ValueError(f"unknown extractor: {kind}")
 
 
-def get_document_extractor(**kw) -> AnthropicExtractor:
-    """The uploads path is always model-backed: there is no mock reading of
-    a PDF nobody has seen before."""
-    return AnthropicExtractor(**kw)
+def get_document_extractor(**kw) -> ModelExtractor:
+    """The uploads path is always model-backed: there is no mock reading of a
+    PDF nobody has seen before."""
+    backend = available_backend()
+    if backend is None:
+        raise ExtractionError(
+            "No model API key is set. Set ANTHROPIC_API_KEY or OPENROUTER_API_KEY."
+        )
+    return BACKENDS[backend][1](**kw)
