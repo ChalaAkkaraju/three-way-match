@@ -5,6 +5,8 @@
     python3 -m app.cli show INV-0007       one invoice, with the full trace
     python3 -m app.cli export out/         write JSON + rendered documents
     python3 -m app.cli serve               start the reviewer UI on :8000
+    python3 -m app.cli rag-evals           score retrieval and the permission audit
+    python3 -m app.cli ask "question"      search the document corpus as a role
 """
 
 from __future__ import annotations
@@ -170,6 +172,44 @@ def cmd_export(args) -> int:
     return 0
 
 
+def cmd_rag_evals(args) -> int:
+    from .evals_rag import format_report as _fmt, run as _run
+    from .retrieval import Retriever
+    report = _run(Retriever())
+    if args.json:
+        print(json.dumps(report, indent=2, default=str))
+    else:
+        print(_fmt(report))
+    return 0 if report["permissions"]["passed"] else 1
+
+
+def cmd_ask(args) -> int:
+    from .corpus import Principal
+    from .retrieval import Retriever
+
+    res = Retriever().search(args.question, Principal("cli", args.role), k=args.k)
+    print()
+    print(f"  {len(res.hits)} passage(s) as {args.role}"
+          f"  ·  {res.considered} searchable  ·  {res.withheld} withheld by clearance"
+          f"  ·  {res.mode} search")
+    print("-" * 74)
+    if not res.hits:
+        print("  Nothing this role is cleared to see matches that.")
+        return 0
+    for h in res.hits:
+        flags = []
+        if not h.chunk.doc.shareable:
+            flags.append("internal")
+        if h.stale:
+            flags.append(f"superseded {h.chunk.doc.effective_to}")
+        print(f"\n  {h.chunk.citation}   {('[' + ', '.join(flags) + ']') if flags else ''}")
+        print(f"  {h.chunk.doc.title}")
+        body = " ".join(h.chunk.text.split())
+        print(f"      {body[:320]}{'...' if len(body) > 320 else ''}")
+    print()
+    return 0
+
+
 def cmd_serve(args) -> int:
     from .api import serve
     serve(host=args.host, port=args.port, extractor=args.extractor)
@@ -201,6 +241,17 @@ def main(argv=None) -> int:
     p.add_argument("out", nargs="?", default="out")
     p.add_argument("--pdf", action="store_true", help="also render PDFs (needs reportlab)")
     p.set_defaults(fn=cmd_export)
+
+    p = sub.add_parser("rag-evals", help="score retrieval and run the permission audit")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=cmd_rag_evals)
+
+    p = sub.add_parser("ask", help="search the document corpus as a given role")
+    p.add_argument("question")
+    p.add_argument("--role", default="ap_clerk",
+                   choices=["ap_clerk", "ap_manager", "finance_controller", "legal"])
+    p.add_argument("--k", type=int, default=5)
+    p.set_defaults(fn=cmd_ask)
 
     p = sub.add_parser("serve", help="start the reviewer UI")
     p.add_argument("--host", default="0.0.0.0")

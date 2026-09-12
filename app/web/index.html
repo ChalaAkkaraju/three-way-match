@@ -125,6 +125,35 @@ nav.tabs button:focus-visible{outline:2px solid var(--accent);outline-offset:2px
 .chip:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .search{flex:1;min-width:120px;border:1px solid var(--line-2);background:var(--ground);color:var(--ink);border-radius:99px;padding:3px 11px;font-size:11.5px}
 
+/* ---------- role + retrieval ---------- */
+.rolepick{display:flex;flex-direction:column;gap:3px}
+.rolepick span{font-size:10px;text-transform:uppercase;letter-spacing:.09em;color:var(--muted)}
+.rolepick select{font:inherit;font-size:12.5px;background:var(--ground);color:var(--ink);
+  border:1px solid var(--line-2);border-radius:5px;padding:4px 8px}
+.rolepick select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+.brief{white-space:pre-wrap;font-size:13px;line-height:1.55;color:var(--ink)}
+.brief b.h{display:block;font-family:"IBM Plex Sans",sans-serif;font-size:10.5px;
+  text-transform:uppercase;letter-spacing:.1em;color:var(--muted);margin:14px 0 4px}
+.brief b.h:first-child{margin-top:0}
+.cite{font-family:"IBM Plex Mono",monospace;font-size:11px;background:var(--accent-soft);
+  color:var(--accent);border-radius:3px;padding:1px 5px;white-space:nowrap}
+.cite.bad{background:var(--block-soft);color:var(--block);text-decoration:line-through}
+.steps{display:flex;flex-direction:column;gap:0;border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+.step{display:grid;grid-template-columns:26px 1fr auto;gap:10px;padding:7px 11px;font-size:12px;border-bottom:1px solid var(--line)}
+.step:last-child{border-bottom:0}
+.step .i{color:var(--muted);font-size:11px}
+.step .t{font-family:"IBM Plex Mono",monospace;font-size:11.5px}
+.step .m{color:var(--muted);font-size:11px}
+.passage{border:1px solid var(--line);border-radius:var(--r);padding:10px 12px;margin-bottom:8px}
+.passage .ph{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:baseline;margin-bottom:5px}
+.passage .pt{font-size:12px;line-height:1.5;color:var(--ink-2);max-height:8.4em;overflow:auto}
+.warnbox{border:1px solid var(--fraud);background:var(--fraud-soft);color:var(--fraud);
+  border-radius:var(--r);padding:10px 12px;font-size:12.5px}
+.searchrow{display:flex;gap:8px;flex-wrap:wrap}
+.searchrow input[type=search]{flex:1;min-width:200px;border:1px solid var(--line-2);background:var(--ground);
+  color:var(--ink);border-radius:5px;padding:7px 11px;font:inherit;font-size:13px}
+
 /* ---------- upload ---------- */
 .dropzone{margin:12px 14px;border:1px dashed var(--line-2);border-radius:var(--r);padding:14px;text-align:center;background:var(--ground)}
 .dropzone.over{border-color:var(--accent);background:var(--accent-soft)}
@@ -274,7 +303,18 @@ table.t td.num,table.t th.num{text-align:right;font-family:"IBM Plex Mono",monos
       <h1>Invoice Match Desk</h1>
       <p>Every incoming invoice checked against its purchase order and its goods receipt, then against the company's approval policy. Exceptions arrive with the numbers that produced them.</p>
     </div>
-    <div class="runmeta" id="runmeta"></div>
+    <div style="display:flex;gap:18px;align-items:flex-end;flex-wrap:wrap">
+      <label class="rolepick" for="rolepick">
+        <span>Signed in as</span>
+        <select id="rolepick">
+          <option value="ap_clerk">AP Clerk</option>
+          <option value="ap_manager">AP Manager</option>
+          <option value="finance_controller">Finance Controller</option>
+          <option value="legal">Legal</option>
+        </select>
+      </label>
+      <div class="runmeta" id="runmeta"></div>
+    </div>
   </div>
   <div class="top-in" style="padding-top:12px">
     <div style="flex:1;min-width:280px">
@@ -286,6 +326,7 @@ table.t td.num,table.t th.num{text-align:right;font-family:"IBM Plex Mono",monos
     <button role="tab" aria-selected="true" data-tab="queue">Exception queue</button>
     <button role="tab" aria-selected="false" data-tab="evals">Evaluation</button>
     <button role="tab" aria-selected="false" data-tab="policy">Policy</button>
+    <button role="tab" aria-selected="false" data-tab="retrieval">Retrieval</button>
     <button role="tab" aria-selected="false" data-tab="how">How it works</button>
   </nav>
 </header>
@@ -332,6 +373,9 @@ table.t td.num,table.t th.num{text-align:right;font-family:"IBM Plex Mono",monos
   <!-- POLICY -->
   <section id="tab-policy" class="hidden stack" style="margin-top:20px"></section>
 
+  <!-- RETRIEVAL -->
+  <section id="tab-retrieval" class="hidden stack" style="margin-top:20px"></section>
+
   <!-- HOW -->
   <section id="tab-how" class="hidden stack" style="margin-top:20px"></section>
 </div>
@@ -348,6 +392,8 @@ async function api(path) {
   if (EMBED) {
     if (path === "/api/summary") return EMBED.summary;
     if (path === "/api/evals")   return EMBED.evals;
+    if (path === "/api/rag-evals") return EMBED.rag;
+    if (path === "/api/health")  return EMBED.health || {};
     if (path === "/api/policy")  return EMBED.policy;
     if (path === "/api/queue")   return { rows: EMBED.queue };
     if (path.startsWith("/api/invoice/")) return EMBED.details[path.split("/").pop()];
@@ -358,7 +404,7 @@ async function api(path) {
 }
 
 const S = { summary:null, evals:null, policy:null, rows:[], filter:"all", q:"", sel:null,
-            autoLimit:null, reviewed:{} };
+            autoLimit:null, reviewed:{}, role:"ap_clerk", health:{}, briefs:{} };
 
 const money = (v, cur) => v == null ? "—" :
   Number(v).toLocaleString("en-US", {style:"currency", currency:cur||"USD", maximumFractionDigits:2});
@@ -594,6 +640,12 @@ function renderDetail(d) {
       </p>` : ""}
     </div>
 
+    <div class="sec" id="investigate-sec">
+      <h3>Investigation</h3>
+      ${investigateControls(d, (row ? row.exception_count : 0) > 0)}
+      <div id="brief-host"></div>
+    </div>
+
     <div class="sec">
       <h3>Reviewer action</h3>
       <div class="actions">
@@ -604,6 +656,13 @@ function renderDetail(d) {
       </div>
       <p style="font-size:12px;color:var(--muted);margin:10px 0 0">${esc(d.note)}</p>
     </div>`;
+
+  const bi = el.querySelector("#btn-investigate");
+  if (bi) bi.onclick = () => investigate(d.invoice.doc_id, false);
+  const br = el.querySelector("#btn-reinvestigate");
+  if (br) br.onclick = () => investigate(d.invoice.doc_id, true);
+  const cachedKey = d.invoice.doc_id + ":" + S.role;
+  if (S.briefs[cachedKey]) investigate(d.invoice.doc_id, false);
 
   el.querySelectorAll("[data-act]").forEach(b => b.onclick = async () => {
     const act = b.dataset.act;
@@ -622,6 +681,94 @@ async function select(id) {
   renderQueue();
   renderDetail(await api("/api/invoice/" + id));
   if (window.innerWidth < 900) document.getElementById("detail").scrollIntoView({behavior:"smooth", block:"start"});
+}
+
+/* --- investigation -------------------------------------------------- */
+const ROLE_LABEL = {ap_clerk:"AP Clerk", ap_manager:"AP Manager",
+                    finance_controller:"Finance Controller", legal:"Legal"};
+
+function briefHTML(b) {
+  const known = new Set(b.citations || []);
+  const body = esc(b.text || "")
+    .replace(/^(WHAT STOPPED IT|WHAT THE DOCUMENTS SAY|WHAT I WOULD CHECK OR DO NEXT|CONFIDENCE)$/gm,
+             '<b class="h">$1</b>')
+    .replace(/\[([^\[\]]{3,120})\]/g, (m, c) =>
+      `<span class="cite${known.has(c.trim()) ? "" : " bad"}">${c}</span>`);
+
+  const conf = (b.retrieved || []).filter(r => r.shareable === false);
+
+  return `
+    ${b.used_confidential ? `<div class="warnbox" style="margin-bottom:12px">
+      <b>Internal material used.</b> ${conf.length} of the passages behind this briefing are
+      marked not shareable with the supplier. Do not quote them in correspondence.
+    </div>` : ""}
+
+    ${(b.unresolved_citations || []).length ? `<div class="warnbox" style="margin-bottom:12px;border-color:var(--block);background:var(--block-soft);color:var(--block)">
+      <b>${b.unresolved_citations.length} citation(s) do not resolve</b> to anything the agent
+      retrieved: ${b.unresolved_citations.map(esc).join(", ")}. Treat those claims as unsupported.
+    </div>` : ""}
+
+    <div class="brief">${body}</div>
+
+    <h3 style="margin-top:16px">What it did (${(b.steps||[]).length} tool calls · ${Math.round(b.latency_ms)} ms · ${esc(b.model)})</h3>
+    <div class="steps">${(b.steps||[]).map(st => `<div class="step">
+      <span class="i">${st.n}</span>
+      <span><span class="t">${esc(st.tool)}</span><div class="m">${esc(st.summary)}</div></span>
+      <span class="m mono">${st.ms} ms</span></div>`).join("")}</div>
+
+    <h3 style="margin-top:16px">Passages it retrieved (${(b.retrieved||[]).length}, ${esc(b.retrieval_mode)} search${b.withheld_chunks ? `, ${b.withheld_chunks} withheld by clearance` : ""})</h3>
+    ${(b.retrieved||[]).map(r => `<div class="passage">
+      <div class="ph">
+        <span class="mono" style="font-size:11.5px">${esc(r.citation)}</span>
+        <span style="display:flex;gap:5px">
+          <span class="tag outline">${esc(r.doc_type||"")}</span>
+          ${r.shareable === false ? '<span class="tag fraud">internal</span>' : ""}
+          ${r.effective_to ? `<span class="tag warning">ended ${esc(r.effective_to)}</span>` : ""}
+        </span>
+      </div>
+      <div class="pt">${esc((r.text||"").trim())}</div>
+    </div>`).join("")}`;
+}
+
+async function investigate(docId, refresh) {
+  const host = document.getElementById("brief-host");
+  if (!host) return;
+  const key = docId + ":" + S.role;
+  if (!refresh && S.briefs[key]) { host.innerHTML = briefHTML(S.briefs[key]); return; }
+
+  host.innerHTML = `<div class="dz-busy"><span class="spin"></span>
+    <span>Reading the contracts and the match result as ${esc(ROLE_LABEL[S.role])}…</span></div>`;
+  try {
+    const res = await fetch("/api/investigate", {
+      method:"POST", headers:{"content-type":"application/json"},
+      body: JSON.stringify({doc_id: docId, role: S.role, name: ROLE_LABEL[S.role], refresh: !!refresh})
+    });
+    const b = await res.json();
+    if (!res.ok || b.error) {
+      host.innerHTML = `<p style="font-size:12.5px;color:var(--block);margin:0">${esc(b.error || "The agent failed.")}</p>`;
+      return;
+    }
+    S.briefs[key] = b;
+    host.innerHTML = briefHTML(b);
+  } catch (e) {
+    host.innerHTML = `<p style="font-size:12.5px;color:var(--block);margin:0">${esc(e.message)}</p>`;
+  }
+}
+
+function investigateControls(d, hasExceptions) {
+  if (EMBED) return `<p style="font-size:12.5px;color:var(--muted);margin:0">
+    The investigation agent runs on the deployed app, not in this baked copy. It reads the match
+    result and searches the contract corpus, filtered to the signed-in role, and returns a cited
+    briefing. It has no tool that can change a verdict.</p>`;
+  if (!S.health.agent_enabled) return `<p style="font-size:12.5px;color:var(--muted);margin:0">
+    Set ANTHROPIC_API_KEY or OPENROUTER_API_KEY on the server to enable the investigation agent.</p>`;
+  if (!hasExceptions) return `<p style="font-size:12.5px;color:var(--muted);margin:0">
+    Nothing stopped this invoice, so there is nothing to investigate. The agent runs only on the
+    exception path \u2014 spending an agent loop on a touchless invoice would buy nothing.</p>`;
+  return `<div class="actions" style="margin-bottom:12px">
+      <button class="btn primary" id="btn-investigate">Investigate as ${esc(ROLE_LABEL[S.role])}</button>
+      <button class="btn" id="btn-reinvestigate">Run again</button>
+    </div><div id="brief-slot"></div>`;
 }
 
 /* --- evaluation tab ------------------------------------------------ */
@@ -758,6 +905,94 @@ function renderPolicy() {
   };
 }
 
+/* --- retrieval tab -------------------------------------------------- */
+async function renderRetrieval() {
+  const host = document.getElementById("tab-retrieval");
+  const rag = S.rag;
+  if (!rag) { host.innerHTML = '<div class="empty">No retrieval report.</div>'; return; }
+  const r = rag.retrieval, p = rag.permissions, g = rag.grounding;
+
+  const cards = [
+    ["Permission audit", p.passed ? "PASS" : "FAIL", p.passed ? "flag" : "bad",
+     p.chunks_checked + " passages checked, every question asked as every role"],
+    ["Recall@" + r.k, r.recall_at_k, "", r.scored_for_recall + " questions with a known governing document"],
+    ["MRR", r.mrr, "", "how near the top the right document lands"],
+    ["Precision@" + r.k, r.precision_at_k, "", "we ask for " + r.k + " and usually need one or two"],
+    ["Withheld correctly", r.withheld_correctly, r.withheld_all_correct ? "flag" : "bad",
+     "documents a role must not be shown"],
+    ["Retrieval mode", r.mode, "", r.mode === "hybrid" ? "BM25 and embeddings, fused by rank"
+      : "BM25 only \u2014 no embeddings key set"],
+  ];
+
+  host.innerHTML = `
+    <div class="note">
+      <p><b>Retrieval is scored apart from the answer, and the permission audit is not a metric at all.</b>
+      Recall tells you whether the governing clause was found; citation validity tells you whether the
+      answer stayed inside what was found. They fail for different reasons. If recall is the problem,
+      rewriting the agent's prompt is wasted effort.</p>
+      <p>The audit is a hard assertion rather than a percentage: every question is asked as every role,
+      and a passage above the asker's clearance appearing in any result set is a failure. There is no
+      acceptable non-zero value, because a result set is what becomes the prompt.</p>
+    </div>
+
+    <div class="grid-cards">${cards.map(([k,v,cls,n]) =>
+      `<div class="stat ${cls}"><div class="k">${esc(k)}</div><div class="v mono">${esc(v)}</div><div class="n">${esc(n)}</div></div>`).join("")}</div>
+
+    <div class="panel">
+      <div class="panel-h"><h2>Try it</h2><span class="count">change the role and run the same query again</span></div>
+      <div class="sec">
+        <div class="searchrow">
+          <input type="search" id="rq" placeholder="e.g. how much notice before a rate increase" value="what is our negotiating position at renewal">
+          <button class="btn primary" id="rq-go">Search as ${esc(ROLE_LABEL[S.role])}</button>
+        </div>
+        <div id="rq-out" style="margin-top:14px"></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-h"><h2>Question set</h2><span class="count">${r.questions} questions, ${r.deferred_to_grounding} deferred to grounding</span></div>
+      <div class="scroll-x"><table class="t">
+        <thead><tr><th>#</th><th>Kind</th><th>Role</th><th>Question</th><th>Scored</th><th class="num">Recall</th></tr></thead>
+        <tbody>${r.per_question.map(q => `<tr>
+          <td class="mono">${esc(q.qid)}</td>
+          <td><span class="tag ${q.kind === "permission" ? "fraud" : (q.kind === "refuse" ? "warning" : "plain")}">${esc(q.kind)}</span></td>
+          <td class="mono" style="font-size:11px">${esc(q.role)}</td>
+          <td>${esc(q.question)}${q.note ? `<div style="font-size:11px;color:var(--muted)">${esc(q.note)}</div>` : ""}</td>
+          <td style="font-size:11.5px;color:var(--muted)">${esc((q.scored_as||"").replace(/_/g," "))}</td>
+          <td class="num">${q.recall === undefined ? "\u2014" : q.recall}</td></tr>`).join("")}</tbody>
+      </table></div>
+    </div>
+
+    <div class="note"><p><b>Grounding.</b> ${g.briefings
+      ? `${g.briefings} briefing(s) scored. Citation validity ${g.citation_validity}, ${g.unresolved_citations} unresolved.`
+      : "Not scored here \u2014 it needs briefings the agent actually produced. Run an investigation from the queue, then this fills in."}</p></div>`;
+
+  const go = document.getElementById("rq-go");
+  const run = async () => {
+    const q = document.getElementById("rq").value.trim();
+    const out = document.getElementById("rq-out");
+    if (!q) return;
+    if (EMBED) { out.innerHTML = '<p style="font-size:12.5px;color:var(--muted)">Live search runs on the deployed app.</p>'; return; }
+    out.innerHTML = '<div class="dz-busy"><span class="spin"></span><span>Searching…</span></div>';
+    const res = await (await fetch(`/api/search?q=${encodeURIComponent(q)}&role=${S.role}`)).json();
+    if (res.error) { out.innerHTML = esc(res.error); return; }
+    out.innerHTML = `<p style="font-size:12px;color:var(--muted);margin:0 0 10px">
+        ${res.hits.length} passage(s) from ${res.considered} the ${esc(ROLE_LABEL[S.role])} may see
+        \u00b7 ${res.withheld} withheld by clearance \u00b7 ${esc(res.mode)} search</p>` +
+      (res.hits.length ? res.hits.map(h => `<div class="passage">
+        <div class="ph"><span class="mono" style="font-size:11.5px">${esc(h.citation)}</span>
+          <span style="display:flex;gap:5px">
+            <span class="tag outline">${esc(h.doc_type)}</span>
+            ${h.shareable === false ? '<span class="tag fraud">internal</span>' : ""}
+          </span></div>
+        <div class="pt">${esc((h.text||"").trim())}</div></div>`).join("")
+        : '<p style="font-size:12.5px;color:var(--muted)">Nothing this role is cleared to see matches that.</p>');
+  };
+  go.onclick = run;
+  document.getElementById("rq").addEventListener("keydown", e => { if (e.key === "Enter") run(); });
+  run();
+}
+
 /* --- how it works -------------------------------------------------- */
 function renderHow() {
   document.getElementById("tab-how").innerHTML = `
@@ -805,10 +1040,11 @@ function renderHow() {
 document.querySelectorAll("nav.tabs button").forEach(b => {
   b.onclick = () => {
     document.querySelectorAll("nav.tabs button").forEach(x => x.setAttribute("aria-selected", x === b));
-    ["queue","evals","policy","how"].forEach(t =>
+    ["queue","evals","policy","retrieval","how"].forEach(t =>
       document.getElementById("tab-" + t).classList.toggle("hidden", t !== b.dataset.tab));
     if (b.dataset.tab === "evals") renderEvals();
     if (b.dataset.tab === "policy") renderPolicy();
+    if (b.dataset.tab === "retrieval") renderRetrieval();
     if (b.dataset.tab === "how") renderHow();
   };
 });
@@ -822,6 +1058,12 @@ document.getElementById("filters").querySelectorAll(".chip").forEach(c => {
   };
 });
 document.getElementById("search").oninput = e => { S.q = e.target.value; renderQueue(); };
+
+document.getElementById("rolepick").onchange = e => {
+  S.role = e.target.value;
+  if (S.sel) api("/api/invoice/" + S.sel).then(renderDetail);
+  if (!document.getElementById("tab-retrieval").classList.contains("hidden")) renderRetrieval();
+};
 
 /* --- upload -------------------------------------------------------- */
 function setupUpload(health) {
@@ -891,7 +1133,9 @@ function setupUpload(health) {
     api("/api/summary"), api("/api/evals"), api("/api/policy"), api("/api/queue")
   ]);
   S.summary = summary; S.evals = evals; S.policy = policy;
-  if (!EMBED) { try { setupUpload(await api("/api/health")); } catch (e) {} }
+  try { S.health = await api("/api/health"); } catch (e) { S.health = {}; }
+  try { S.rag = await api("/api/rag-evals"); } catch (e) { S.rag = null; }
+  if (!EMBED) { try { setupUpload(S.health); } catch (e) {} }
   S.rows = queue.rows.map(r => ({...r, severities: r.severities || []}));
   S.autoLimit = Number(policy.auto_approve_limit);
   applyPolicy();

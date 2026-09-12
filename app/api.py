@@ -25,10 +25,12 @@ import threading
 from decimal import Decimal
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
-from . import ingest
+from . import evals_rag, ingest
+from .agent import investigate
 from .config import DEFAULT_POLICY, Policy
+from .corpus import DOCUMENTS, ROLES, Principal, corpus_stats
 from .documents import render_pdf, render_text
 from .evals import Evaluator
 from .extraction import (
@@ -37,7 +39,9 @@ from .extraction import (
     get_document_extractor,
     has_api_key,
 )
+from .llm import LLMError, available_chat_backend, get_chat_backend
 from .pipeline import build_default_pipeline, summarise
+from .retrieval import Retriever
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -67,6 +71,11 @@ class State:
         self.uploads: List[Any] = []          # extracted Invoice objects, in arrival order
         self.upload_meta: Dict[str, Dict[str, Any]] = {}
         self._doc_extractor = None
+        # The retriever indexes the corpus once and survives policy changes:
+        # tolerances have nothing to do with what the contracts say.
+        self.retriever = Retriever()
+        self.briefings: Dict[str, Dict[str, Any]] = {}     # f"{doc_id}:{role}" -> briefing
+        self.rag_report = evals_rag.run(self.retriever)
         self.rebuild()
 
     def rebuild(self) -> None:
@@ -279,6 +288,9 @@ class Handler(BaseHTTPRequestHandler):
                 # The UI needs to know whether the upload path can work at all,
                 # so it can say so before someone drags a file onto it.
                 "uploads_enabled": backend is not None,
+                "agent_enabled": available_chat_backend() is not None,
+                "retrieval_mode": STATE.rag_report["headline"]["retrieval_mode"],
+                "roles": list(ROLES),
                 "upload_backend": backend,
                 "upload_model": STATE.upload_model(),
                 "max_upload_mb": ingest.MAX_BYTES // 1024 // 1024,
@@ -313,6 +325,32 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/evals":
             return self._json(STATE.report)
 
+        if path == "/api/rag-evals":
+            return self._json(STATE.rag_report)
+
+        if path == "/api/corpus":
+            role = (parse_qs(urlparse(self.path).query).get("role") or ["ap_clerk"])[0]
+            principal = Principal("viewer", role if role in ROLES else "ap_clerk")
+            visible = [d for d in DOCUMENTS if principal.may_see(d)]
+            return self._json({
+                "roles": list(ROLES),
+                "principal": principal.to_dict(),
+                "stats": corpus_stats(),
+                "visible": len(visible),
+                "withheld": len(DOCUMENTS) - len(visible),
+                "documents": [d.to_dict() for d in visible],
+            })
+
+        if path == "/api/search":
+            q = parse_qs(urlparse(self.path).query)
+            query = (q.get("q") or [""])[0]
+            role = (q.get("role") or ["ap_clerk"])[0]
+            if not query.strip():
+                return self._json({"error": "empty query"}, 400)
+            principal = Principal("viewer", role if role in ROLES else "ap_clerk")
+            res = STATE.retriever.search(query, principal, k=int((q.get("k") or ["6"])[0]))
+            return self._json({**res.to_dict(), "principal": principal.to_dict()})
+
         if path.startswith("/api/invoice/"):
             d = STATE.detail(path.rsplit("/", 1)[-1])
             return self._json(d) if d else self._json({"error": "not found"}, 404)
@@ -335,6 +373,34 @@ class Handler(BaseHTTPRequestHandler):
                 STATE.policy = Policy.from_dict(body)
                 STATE.rebuild()
             return self._json({"policy": STATE.policy.to_dict(), "summary": STATE.summary})
+
+        if path == "/api/investigate":
+            doc_id = body.get("doc_id")
+            role = body.get("role") or "ap_clerk"
+            role = role if role in ROLES else "ap_clerk"
+            name = body.get("name") or "Reviewer"
+            r = STATE.by_id.get(doc_id)
+            if r is None:
+                return self._json({"error": "not found"}, 404)
+            if available_chat_backend() is None:
+                return self._json({
+                    "error": "The investigation agent needs a model API key. Set "
+                             "ANTHROPIC_API_KEY or OPENROUTER_API_KEY on the server.",
+                    "code": "no_api_key",
+                }, 503)
+
+            cache_key = f"{doc_id}:{role}"
+            if not body.get("refresh") and cache_key in STATE.briefings:
+                return self._json({**STATE.briefings[cache_key], "cached": True})
+            try:
+                brief = investigate(r, STATE.pipeline.master, STATE.retriever,
+                                    Principal(name, role))
+            except LLMError as e:
+                return self._json({"error": str(e), "code": "agent_failed"}, 502)
+            payload = brief.to_dict()
+            if not payload.get("error"):
+                STATE.briefings[cache_key] = payload
+            return self._json({**payload, "cached": False})
 
         if path == "/api/decision":
             doc_id = body.get("doc_id")

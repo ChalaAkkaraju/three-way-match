@@ -30,6 +30,11 @@ def build(out_path: str, extractor: str = "mock", standalone: bool = False) -> s
         "summary": state.summary,
         "policy": state.policy.to_dict(),
         "evals": state.report,
+        "rag": state.rag_report,
+        "health": {"agent_enabled": False, "uploads_enabled": False,
+                   "retrieval_mode": state.rag_report["headline"]["retrieval_mode"],
+                   "roles": list(state.rag_report.get("roles", []))
+                            or ["ap_clerk", "ap_manager", "finance_controller", "legal"]},
         "queue": state.queue(),
         "details": {r.invoice.doc_id: state.detail(r.invoice.doc_id) for r in state.results},
     }

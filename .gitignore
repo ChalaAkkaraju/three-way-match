@@ -3,3 +3,4 @@ __pycache__/
 out/
 demo/
 .env
+data/embeddings.json

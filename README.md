@@ -22,7 +22,9 @@ python3 -m app.cli evals             # score against the labelled golden set
 python3 -m app.cli show INV-0020     # one invoice end to end, with the trace
 python3 -m app.cli serve             # reviewer UI on http://localhost:8000
 python3 -m app.cli export out --pdf  # run.json plus rendered documents
-python3 -m tests.test_matching       # 52 tests
+python3 -m app.cli rag-evals         # retrieval quality + the permission audit
+python3 -m app.cli ask "can they raise rates" --role ap_clerk
+python3 -m tests                     # 84 tests
 ```
 
 To read real invoice PDFs, set a key first:
@@ -213,6 +215,124 @@ require real documents.
 
 ---
 
+## The investigation agent
+
+The match engine says an invoice was stopped and shows the numbers. What it
+cannot say is *why the numbers are what they are*: which rate card governs a
+purchase order raised in April, whether the goods were returned, what was
+agreed with this supplier in March. That lives in contracts, emails, delivery
+notes and dispute records — and that is what the agent retrieves.
+
+```
+Investigate  ->  read the verdict  ->  search the corpus  ->  cited briefing
+                 (deterministic)       (permission-filtered)   (checked)
+```
+
+Two constraints define it.
+
+**It cannot change a verdict.** It reads the match result through a tool; there
+is no tool that writes one. Every tool name starts with `get_`, `search_` or
+`read_`, and a test asserts it. Exceptions clear when a human clears them. This
+is what lets a model help without making the decision path non-deterministic.
+
+**It runs only on the exception path.** A touchless invoice costs microseconds
+and no tokens; an agent loop costs seconds and real money. It runs where a
+human would otherwise be opening four screens.
+
+### Retrieval
+
+Hybrid, and permission-aware in that order of importance.
+
+**The filter runs before the search.** A principal's clearance narrows the
+candidate set before anything is scored, so a restricted passage never reaches
+the prompt. Filtering the *answer* is too late — the confidential text has
+already been in the context window, and "the model was told not to repeat it"
+is not an access control.
+
+**BM25 and embeddings, fused by rank.** BM25 is written out in
+`retrieval.py` rather than imported, so the scoring is visible: term frequency
+saturates, long passages are penalised, rare terms weigh more. Embeddings come
+from OpenRouter, cached on disk by content hash so runs are reproducible.
+Reciprocal rank fusion combines them by position, because a BM25 score and a
+cosine similarity are not on the same scale and normalising them is a fudge
+that breaks on the next corpus. Without an API key the dense half is skipped
+and search says it degraded rather than pretending otherwise.
+
+**Chunks split at the document's own seams** — contracts at clause numbers,
+email threads at message boundaries — and each carries its heading into the
+index. Retrieval quality on contract text is mostly a chunking problem.
+
+**A validity prior, scoped carefully.** A superseded rate card uses the same
+words as the current one and is often the tidier document, so it wins on a
+query about current rates. Superseded documents are therefore demoted, not
+removed — remove them and "what was the rate before the increase?" becomes
+unanswerable. Three refinements matter:
+
+- it applies only to contracts, rate cards and policies, where a date range
+  means *this governs now*. On an email or a dispute record the same field is
+  just when it happened, and demoting a dispute for being recent is backwards;
+- a question phrased about the past switches it off;
+- the agent can pass an explicit `as_of` — the date the purchase order was
+  raised — instead of relying on the phrasing, which is the right answer.
+
+### The corpus
+
+Sixteen documents, written to be awkward: a superseded rate card that still
+reads as authoritative, an email exchange that contradicts what the current
+rate card implies, a phishing-shaped bank-change request with the AP note that
+caught it, an internal legal assessment nobody in AP should see, and questions
+the corpus simply cannot answer.
+
+Each document carries `vendor`, `effective_from`/`effective_to`, `authority`,
+`access_level` and `shareable`. That last one drives a warning in the briefing:
+if the agent used material marked not shareable, it says so, because quoting
+your own dispute record back to the supplier is a bad afternoon.
+
+### Evaluation, one level up
+
+The same discipline as the match evals. Three questions, measured three ways,
+because averaging them would produce a number that means nothing:
+
+| | measured by |
+| --- | --- |
+| Did we retrieve the right passages? | recall@k, MRR, precision@k |
+| Did the answer stay inside them? | citation validity, uncited rate |
+| Could anyone see what they shouldn't? | the permission audit |
+
+Twenty-five golden questions, deliberately not all easy lookups: cross-document
+synthesis, conflicting sources, current-versus-superseded, and three the corpus
+cannot answer at all. Those three are **not** scored as retrieval failures —
+BM25 will always return its best guess and should; the refusal has to happen at
+generation time, so they are handed to the grounding stage instead. Scoring
+them here would punish retrieval for the agent's job.
+
+**The permission audit is not a metric.** Every question is asked as every
+role, and a passage above the asker's clearance appearing in any result set is
+a failure. There is no acceptable non-zero value, so it reports pass or fail
+and names every violation. Whole-document reads are audited the same way, and
+a forbidden document is made indistinguishable from a missing one — telling a
+clerk that a legal note about this vendor exists is itself a disclosure.
+
+Citations are verified after the fact rather than trusted: every bracketed
+citation in a briefing must resolve to a passage the agent actually retrieved.
+A real document id it never opened counts as unresolved, because from the
+reviewer's point of view an invented citation and an unread one fail the same
+way. Unresolved citations are shown in the UI struck through.
+
+### Trying it without spending tokens
+
+Retrieval needs no model, so the permission behaviour is demonstrable for free:
+
+```bash
+python3 -m app.cli ask "what is our negotiating position at renewal" --role ap_clerk
+python3 -m app.cli ask "what is our negotiating position at renewal" --role legal
+```
+
+The same query, in the Retrieval tab of the UI, with the role selector in the
+header.
+
+---
+
 ## Deploy
 
 Locally:
@@ -268,6 +388,11 @@ app/
   policy.py      decision ladder, approval routing, payable amount
   pipeline.py    orchestration and per-stage latency
   ingest.py      uploaded PDFs and scans, through the same engine
+  corpus.py      contracts, rate cards, policies, correspondence, disputes
+  retrieval.py   chunking, BM25, embeddings, fusion, the access filter
+  llm.py         tool-calling chat over the same two providers
+  agent.py       the investigation agent and its read-only tools
+  evals_rag.py   retrieval scored apart from grounding; the permission audit
   evals.py       extraction scored apart from decisions
   api.py         HTTP service and reviewer UI
   cli.py         command line
@@ -275,7 +400,9 @@ app/
 scripts/
   build_demo.py  bake a run into a standalone HTML page
 tests/
-  test_matching.py
+  harness.py        a test runner small enough to read
+  test_matching.py  the engine
+  test_rag.py       retrieval, permissions and the agent
 ```
 
 ---

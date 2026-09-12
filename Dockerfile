@@ -20,10 +20,12 @@ ENV PYTHONUNBUFFERED=1 \
 EXPOSE 8000
 
 # Fail the build if the match engine is broken.
-RUN python3 -m tests.test_matching
+RUN python3 -m tests
 
-# ANTHROPIC_API_KEY is optional. Without it everything works except reading
-# uploaded PDFs, and the UI says so rather than failing silently.
+# A model key (ANTHROPIC_API_KEY or OPENROUTER_API_KEY) is optional. Without
+# one, everything works except reading uploaded PDFs and running the
+# investigation agent; retrieval falls back to BM25 alone. The UI says which,
+# rather than failing silently when someone uses it.
 HEALTHCHECK --interval=30s --timeout=4s --start-period=5s \
   CMD python3 -c "import urllib.request,os;urllib.request.urlopen('http://127.0.0.1:'+os.environ.get('PORT','8000')+'/api/health',timeout=3)"
 

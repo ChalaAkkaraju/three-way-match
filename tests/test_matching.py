@@ -8,7 +8,6 @@ Run:  python3 -m tests.test_matching      (from the project root)
 from __future__ import annotations
 
 import sys
-import traceback
 from datetime import date
 from decimal import Decimal
 
@@ -33,26 +32,7 @@ from app.store import MasterData, normalise_name
 
 AS_OF = date(2026, 6, 1)
 
-FAILURES = []
-PASSES = 0
-
-
-def check(name):
-    def deco(fn):
-        global PASSES
-        try:
-            fn()
-            PASSES += 1
-            print(f"  ok    {name}")
-        except AssertionError as e:
-            FAILURES.append((name, str(e)))
-            print(f"  FAIL  {name}: {e}")
-        except Exception:
-            FAILURES.append((name, traceback.format_exc()))
-            print(f"  ERROR {name}")
-            traceback.print_exc()
-        return fn
-    return deco
+from tests.harness import check, summary
 
 
 # --------------------------------------------------------------------------
@@ -715,11 +695,5 @@ def _():
                 os.environ[k] = v
 
 
-print()
-print("=" * 60)
-if FAILURES:
-    print(f"{PASSES} passed, {len(FAILURES)} FAILED")
-    for name, err in FAILURES:
-        print(f"  - {name}: {err.splitlines()[0] if err else ''}")
-    sys.exit(1)
-print(f"{PASSES} passed")
+if __name__ == "__main__":
+    sys.exit(summary("match engine"))
