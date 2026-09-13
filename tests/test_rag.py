@@ -327,6 +327,57 @@ def _():
     assert not b.unresolved_citations, b.unresolved_citations
 
 
+@check("a citation resolves when its document was retrieved, even if reworded")
+def _():
+    # Real behaviour observed in production: the model cited
+    # "POL-AP-001\u00a75 Non-waivable exceptions" and appended a document
+    # title to another. The claims were supported; only the strings differed.
+    # A document the agent never opened must still fail.
+    backend = StubBackend([
+        _turn(calls=[("search_documents", {"query": "bank detail change letterhead telephone"})]),
+        _turn(text="Non-waivable [POL-AP-001\u00a75 Non-waivable exceptions] and "
+                   "[POL-AP-012 Working with exceptions] say so, "
+                   "unlike [POL-NEVER-SEEN\u00a71 Invented]."),
+    ])
+    b = investigate(_RESULTS["INV-0023"], _PIPE.master, _RETRIEVER, CLERK, backend=backend)
+    assert "POL-NEVER-SEEN\u00a71 Invented" in b.unresolved_citations, b.unresolved_citations
+    assert len(b.unresolved_citations) == 1, b.unresolved_citations
+    assert len(b.citations) == 2, b.citations
+
+
+@check("numbered policies are citable at the clause, like contracts")
+def _():
+    from app.retrieval import chunk_document
+    cites = [c.citation for c in chunk_document(DOCUMENTS_BY_ID["POL-AP-001"])]
+    assert "POL-AP-001\u00a75 Non-waivable exceptions" in cites, cites
+    assert "POL-AP-001\u00a78 Bank detail changes" in cites, cites
+    # An unnumbered policy stays whole, and its citation is the document id.
+    assert [c.citation for c in chunk_document(DOCUMENTS_BY_ID["POL-AP-012"])] == ["POL-AP-012"]
+
+
+@check("the record that explains a bank change is reachable by its own numbers")
+def _():
+    # Observed live: the agent searched the topic, got policy back, and wrote
+    # that the submission record "could not be established" -- while the email
+    # that named the account sat one query away, visible to every role.
+    for q in ("bank account change verification payment diversion",
+              "account ending 0917",
+              "remittance details changed email request"):
+        hits = _RETRIEVER.search(q, CLERK, k=5).hits
+        assert any(h.chunk.doc_id == "CORR-100047-0188" for h in hits), \
+            (q, [h.chunk.citation for h in hits])
+
+
+@check("scoping to a vendor keeps company-wide policy in scope")
+def _():
+    hits = _RETRIEVER.search("bank account change notification", MANAGER, k=5,
+                             vendor="0000100047").hits
+    docs = {h.chunk.doc_id for h in hits}
+    assert "CORR-100047-0188" in docs, docs          # this vendor
+    assert any(d.startswith("POL-") for d in docs), docs   # company-wide
+    assert not any(d.endswith("100062-2025") for d in docs), docs  # other vendor
+
+
 @check("the loop stops rather than calling tools forever")
 def _():
     backend = StubBackend([_turn(calls=[("get_match_result", {})]) for _ in range(20)])

@@ -55,27 +55,44 @@ Rules, in order of importance:
    though you have settled it.
 
 2. Cite every factual claim that comes from a document, in square brackets,
-   using the exact citation string returned by search_documents — for example
-   [MSA-100062-2025§4.2 Rate increases]. A claim about the invoice, the
-   purchase order or the goods receipt should cite the tool it came from, for
-   example [get_goods_receipts].
+   copying the `citation` field of the passage verbatim — for example
+   [MSA-100062-2025§4.2 Rate increases] or [POL-AP-012]. Copy it exactly:
+   do not append the document title, do not invent a section number, and do
+   not merge two citations into one bracket. A claim about the invoice, the
+   purchase order or the goods receipt cites the tool it came from instead,
+   for example [get_goods_receipts].
 
-3. Never state a document says something you have not retrieved. If the
+3. If you find yourself writing that something "could not be established"
+   or "was not retrieved here", search for it before you write that. Saying
+   a record was not found, when one search away it exists, is worse than
+   useless to a reviewer: they will believe you.
+
+4. Never state a document says something you have not retrieved. If the
    documents do not answer the question, say so plainly and say what would
    answer it. "The corpus does not cover this" is a correct and useful
    answer. Do not fill the gap from general knowledge about accounts payable.
 
-4. Watch the dates. A rate card or contract that was superseded before the
+5. Watch the dates. A rate card or contract that was superseded before the
    purchase order was raised does not govern it. Check effective_from and
    effective_to on what you retrieve, and say which document you are relying
    on and why.
 
-5. If any document you used is marked shareable: false, do not suggest
+6. If any document you used is marked shareable: false, do not suggest
    quoting it to the supplier, and say explicitly that it is internal.
 
 Work by calling tools. Start from the match result so you know what actually
-fired. Search for the documents that bear on it. Read a full document when a
-snippet is not enough.
+fired, then search. How you search matters:
+
+- Scope to the vendor. Pass `vendor` with the invoice's vendor number when
+  the question is about this supplier. Company-wide policy stays in scope.
+- Search for the specific values in dispute as well as the topic. The account
+  digits, the purchase order number, the delivery note, the invoice number.
+  A topical query finds the policy; the operational record that explains what
+  actually happened is usually found by its numbers.
+- Search more than once. A first search that returns only policy has told you
+  the rules, not the facts. Follow it with a narrower one before concluding
+  that the record does not exist.
+- Read a full document when a snippet is not enough.
 
 When you have what you need, reply with a short briefing in this shape:
 
@@ -193,7 +210,10 @@ def tool_specs() -> List[ToolSpec]:
                  "query": {"type": "string",
                            "description": "what you need to know, in natural language"},
                  "vendor": {"type": "string",
-                            "description": "optional vendor number to scope the search"},
+                            "description": "vendor number. Pass it whenever the question "
+                                           "concerns one supplier: it keeps other suppliers' "
+                                           "contracts out of the way while leaving "
+                                           "company-wide policy in scope."},
                  "doc_types": {"type": "array", "items": {"type": "string"},
                                "description": "optional filter: contract, rate_card, policy, "
                                               "correspondence, delivery_note, dispute"},
@@ -411,17 +431,25 @@ def investigate(
     brief.retrieval_mode = box.mode
     brief.used_confidential = box.touched_confidential
 
-    known = set(box.retrieved) | TOOL_NAMES
+    exact = set(box.retrieved) | TOOL_NAMES
+    # A citation also resolves if its DOCUMENT was retrieved, even when the
+    # section string is not a verbatim match -- models routinely append the
+    # document title, or cite a clause by name rather than by the exact
+    # heading. What must not pass is a document the agent never opened, and
+    # that is still caught: the id is checked, not the prose around it.
+    docs = {c.split("\u00a7")[0].strip() for c in box.retrieved}
+    docs |= {r.get("doc_id") for r in box.retrieved.values() if r.get("doc_id")}
+
     for raw in CITATION_RE.findall(brief.text or ""):
         cite = raw.strip()
-        if cite in known:
+        doc_part = cite.split("\u00a7")[0].split()[0].strip() if cite.split() else ""
+        if cite in exact or doc_part in docs:
             if cite not in brief.citations:
                 brief.citations.append(cite)
-        else:
-            # Either invented, or a real document the agent never opened.
-            # Both are the same failure from the reviewer's point of view.
-            if cite not in brief.unresolved_citations:
-                brief.unresolved_citations.append(cite)
+        elif cite not in brief.unresolved_citations:
+            # Invented, or a real document the agent never opened. Both are
+            # the same failure from the reviewer's point of view.
+            brief.unresolved_citations.append(cite)
 
     brief.latency_ms = (time.perf_counter() - started) * 1000
     return brief

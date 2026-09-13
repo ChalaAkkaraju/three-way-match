@@ -4,3 +4,4 @@ out/
 demo/
 .env
 data/embeddings.json
+docs/pdf/

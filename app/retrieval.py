@@ -174,7 +174,10 @@ def chunk_document(doc: Document, target_chars: int = 900) -> List[Chunk]:
                 head += " (AP note)"
             pieces.append((head, part))
 
-    elif doc.doc_type == "contract":
+    elif doc.doc_type in ("contract", "policy"):
+        # Policies are numbered the same way contracts are, and a reviewer
+        # wants "POL-AP-001 section 5", not "the AP policy". Citing at the
+        # clause is only possible if the chunk is the clause.
         cur_head, buf = "", []
         for line in body.split("\n"):
             m = CLAUSE_RE.match(line)
@@ -187,6 +190,9 @@ def chunk_document(doc: Document, target_chars: int = 900) -> List[Chunk]:
                 buf.append(line)
         if buf and "".join(buf).strip():
             pieces.append((cur_head, "\n".join(buf).strip()))
+        # A policy with no numbered clauses (POL-AP-012) produces one
+        # headless piece here, which is correct: its citation is the
+        # document id, and that is what the agent will be handed.
 
     else:
         block, size = [], 0

@@ -14,6 +14,23 @@ No third-party dependencies. Python 3.9+ and the standard library.
 
 ---
 
+## Documentation
+
+| Document | What it covers |
+| --- | --- |
+| [Architecture](docs/architecture.md) | Component map, the three boundaries, retrieval design, runtime topology, HTTP surface |
+| [Design decisions](docs/design-decisions.md) | Seventeen decisions with what each one rejects and what it costs — including four that changed mid-build when a test proved the first version wrong |
+| [Process flows](docs/process-flow.md) | Invoice to decision, PDF ingestion, the agent loop, permission-filtered retrieval, policy changes, and the full exception catalogue |
+| [User guide](docs/user-guide.md) | For the person in front of the reviewer screen |
+
+Print-quality PDFs of all four, with the diagrams rendered as vector:
+
+```bash
+python3 scripts/build_docs_pdf.py docs/pdf    # needs mermaid-cli, pandoc, playwright
+```
+
+---
+
 ## Run it
 
 ```bash
@@ -24,7 +41,7 @@ python3 -m app.cli serve             # reviewer UI on http://localhost:8000
 python3 -m app.cli export out --pdf  # run.json plus rendered documents
 python3 -m app.cli rag-evals         # retrieval quality + the permission audit
 python3 -m app.cli ask "can they raise rates" --role ap_clerk
-python3 -m tests                     # 84 tests
+python3 -m tests                     # 88 tests
 ```
 
 To read real invoice PDFs, set a key first:
@@ -144,7 +161,7 @@ bank details against the vendor master, currency, header totals, invoice dates
 against the goods receipt, and the legibility of every field a decision rests
 on.
 
-Twenty-two rules, each with a severity (`info` / `warning` / `blocker` /
+Twenty-one rules, each with a severity (`info` / `warning` / `blocker` /
 `fraud`) and a plain-English explanation. `app/models.py` holds the catalogue;
 it is the single source of truth for what the engine can say.
 
@@ -377,7 +394,7 @@ demo and the wrong one for anything real — the fix is a database behind
 
 ```
 app/
-  models.py      domain types, money as Decimal, the 22-rule catalogue
+  models.py      domain types, money as Decimal, the 21-rule catalogue
   config.py      tolerance keys, approval ladder, UoM dimensions
   generator.py   synthetic SAP-shaped corpus with labelled failure cases
   documents.py   render an invoice to text or PDF, so extraction has real input
