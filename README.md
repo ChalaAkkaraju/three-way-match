@@ -19,7 +19,7 @@ No third-party dependencies. Python 3.9+ and the standard library.
 | Document | What it covers |
 | --- | --- |
 | [Architecture](docs/architecture.md) | Component map, the three boundaries, retrieval design, runtime topology, HTTP surface |
-| [Design decisions](docs/design-decisions.md) | Seventeen decisions with what each one rejects and what it costs — including four that changed mid-build when a test proved the first version wrong |
+| [Design decisions](docs/design-decisions.md) | Twenty-two decisions with what each one rejects and what it costs — including four that changed mid-build when a test proved the first version wrong |
 | [Process flows](docs/process-flow.md) | Invoice to decision, PDF ingestion, the agent loop, permission-filtered retrieval, policy changes, and the full exception catalogue |
 | [User guide](docs/user-guide.md) | For the person in front of the reviewer screen |
 
@@ -41,7 +41,7 @@ python3 -m app.cli serve             # reviewer UI on http://localhost:8000
 python3 -m app.cli export out --pdf  # run.json plus rendered documents
 python3 -m app.cli rag-evals         # retrieval quality + the permission audit
 python3 -m app.cli ask "can they raise rates" --role ap_clerk
-python3 -m tests                     # 88 tests
+python3 -m tests                     # 103 tests
 ```
 
 To read real invoice PDFs, set a key first:
@@ -207,7 +207,7 @@ That is the cost side of the ledger and the reason AP stops trusting a system.
 python3 -m app.cli evals
 ```
 
-The corpus is 50 labelled invoices, each carrying the exception codes and the
+The corpus is 62 labelled invoices, each carrying the exception codes and the
 decision it should produce. Every rule in the catalogue is exercised — a test
 asserts it — and the set deliberately includes the cases a naive matcher gets
 wrong in the expensive direction:
@@ -394,7 +394,7 @@ demo and the wrong one for anything real — the fix is a database behind
 
 ```
 app/
-  models.py      domain types, money as Decimal, the 21-rule catalogue
+  models.py      domain types, money as Decimal, the 29-rule catalogue
   config.py      tolerance keys, approval ladder, UoM dimensions
   generator.py   synthetic SAP-shaped corpus with labelled failure cases
   documents.py   render an invoice to text or PDF, so extraction has real input

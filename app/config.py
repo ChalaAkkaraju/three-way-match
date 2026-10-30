@@ -8,7 +8,10 @@ anyone who has configured MM invoice verification:
     BD  small difference -- automatically accepted and posted to a
         difference account rather than blocking the invoice
     ST  date variance
-    AN  amount of blanket purchase order
+    LA  amount of blanket purchase order
+    UC  unplanned charges -- freight and surcharges with no PO line behind
+        them. Not an OMR6 key: SAP configures unplanned delivery costs
+        separately. Named here so the screen can say what it is checking.
 
 Everything is data, not code. A finance team should be able to change a
 threshold without a developer.
@@ -23,14 +26,30 @@ from typing import Any, Dict, List, Optional
 
 @dataclass
 class Tolerance:
-    """Two-sided tolerance: a check passes if the variance is inside EITHER
-    the absolute or the percentage limit (SAP's 'check limit' semantics)."""
+    """Two-sided tolerance: a variance passes only if it is inside EVERY
+    limit that is configured.
+
+    Read as alternatives, a 35% overcharge on a small line escapes on the
+    absolute cap and a 2% overcharge on a six-figure line escapes on the
+    percentage. Read together, the percentage catches proportionate abuse and
+    the absolute figure caps the exposure."""
 
     key: str
     label: str
     abs_limit: Decimal = Decimal("0")
     pct_limit: Decimal = Decimal("0")
     enabled: bool = True
+
+    def describe(self) -> str:
+        """What this tolerance allows, in words, for the reviewer screen."""
+        if not self.enabled:
+            return "not configured"
+        parts = []
+        if self.abs_limit:
+            parts.append(str(self.abs_limit))
+        if self.pct_limit:
+            parts.append(f"{self.pct_limit}%")
+        return " and ".join(parts) if parts else "not configured"
 
     def passes(self, variance_abs: Decimal, base: Decimal) -> bool:
         """A variance is acceptable only if EVERY configured limit is
@@ -85,7 +104,8 @@ class Policy:
             "PP": Tolerance("PP", "Price variance", Decimal("250.00"), Decimal("3")),
             "BD": Tolerance("BD", "Small difference", Decimal("10.00"), Decimal("5")),
             "ST": Tolerance("ST", "Date variance (days)", Decimal("3"), Decimal("0")),
-            "AN": Tolerance("AN", "Blanket PO amount", Decimal("500.00"), Decimal("5")),
+            "LA": Tolerance("LA", "Blanket PO amount", Decimal("500.00"), Decimal("5")),
+            "UC": Tolerance("UC", "Unplanned charges", Decimal("150.00"), Decimal("10")),
         }
     )
 

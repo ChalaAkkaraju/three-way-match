@@ -68,6 +68,7 @@ class MatchEngine:
 
         self._check_currency(inv, result)
         self._check_header_total(inv, result)
+        self._check_charges(inv, result)
         self._check_dates(inv, result)
 
         result.status = self._roll_up(result)
@@ -174,6 +175,12 @@ class MatchEngine:
                 )
 
     def _check_duplicate(self, inv: Invoice, vendor, result: MatchResult) -> None:
+        # Duplicate detection asks "are we being billed for this twice?".
+        # A credit memo is not a bill, and one that mirrors an invoice's
+        # vendor, date and amount is doing exactly what a credit should do --
+        # flagging that as a duplicate would be a false exception by design.
+        if inv.is_credit:
+            return
         hits = self.master.find_duplicates(
             vendor.lifnr if vendor else inv.lifnr, inv.xblnr, inv.bldat, inv.gross_total
         )
@@ -217,7 +224,11 @@ class MatchEngine:
             return
         line_sum = money(sum((l.amount or Decimal("0")) for l in inv.lines))
         tax = inv.tax_total or Decimal("0")
-        expected = money(line_sum + tax)
+        # Charges are part of what the supplier is billing, so they belong in
+        # the header total. They are checked on their own below; leaving them
+        # out here would raise a total mismatch for every freight line and
+        # bury the real arithmetic errors in noise.
+        expected = money(line_sum + tax + inv.charge_total)
         diff = money(inv.gross_total - expected)
         if diff == 0:
             return
@@ -227,10 +238,40 @@ class MatchEngine:
             Exception_(
                 code="HEADER_TOTAL_MISMATCH",
                 scope="header",
-                detail="gross total does not equal the sum of line amounts plus tax",
+                detail="gross total does not equal the sum of line amounts, tax and charges",
                 expected=str(expected),
                 actual=str(inv.gross_total),
                 variance=str(diff),
+                within_tolerance=within,
+            )
+        )
+
+    def _check_charges(self, inv: Invoice, result: MatchResult) -> None:
+        """Amounts with no purchase order line behind them.
+
+        A line-by-line match cannot see these at all -- there is nothing to
+        compare them against -- so the only available control is a ceiling on
+        how much may arrive unplanned. Measured against the invoice's own line
+        value, because $200 of freight on a $300 order is a different
+        proposition from $200 on a $40,000 one.
+        """
+        if not inv.charges:
+            return
+        total = inv.charge_total
+        if total <= 0:
+            return
+        base = money(sum((l.amount or Decimal("0")) for l in inv.lines))
+        uc = self.policy.tolerances["UC"]
+        within = uc.passes(total, base)
+        kinds = ", ".join(sorted({c.kind for c in inv.charges}))
+        result.header_exceptions.append(
+            Exception_(
+                code="UNPLANNED_CHARGE",
+                scope="header",
+                detail=f"{kinds} billed with no purchase order line behind it",
+                expected=f"within {uc.describe()} of {base}",
+                actual=str(total),
+                variance=str(total),
                 within_tolerance=within,
             )
         )
@@ -317,11 +358,41 @@ class MatchEngine:
             )
             return lm
 
+        # The item number the supplier quoted, if it resolves. Otherwise fall
+        # back to identifying the line from what is on the document -- a
+        # missing item number and a wrong one are the same problem, and
+        # suppliers produce both.
         pline = po.line(l.ebelp) if l.ebelp else None
         if pline is None:
-            pline = self._infer_line(po, l)
-            if pline is not None:
+            inferred, confident = self._infer_line(po, l)
+            if inferred is not None and confident:
+                pline = inferred
                 lm.ebelp = pline.ebelp
+                lm.resolved_by = "inferred"
+                lm.exceptions.append(
+                    Exception_(
+                        code="LINE_INFERRED", scope="line", line_no=l.line_no,
+                        detail=(
+                            f"no usable item number on the invoice; matched to "
+                            f"{po.ebeln}/{pline.ebelp} on material, description and price"
+                        ),
+                        expected="an item number quoted by the supplier",
+                        actual=str(l.ebelp) if l.ebelp else "none",
+                        within_tolerance=True,
+                    )
+                )
+            elif inferred is not None and not confident:
+                lm.status = MatchStatus.UNMATCHED
+                lm.exceptions.append(
+                    Exception_(
+                        code="LINE_AMBIGUOUS", scope="line", line_no=l.line_no,
+                        detail=f"more than one line on PO {po.ebeln} fits this invoice line "
+                               f"equally well",
+                        expected="one clear candidate",
+                        actual="several",
+                    )
+                )
+                return lm
 
         if pline is None:
             lm.status = MatchStatus.UNMATCHED
@@ -366,58 +437,74 @@ class MatchEngine:
         lm.invoiced_qty = inv_qty
         lm.po_unit_price = pline.unit_price
         lm.invoice_unit_price = inv_unit_price
+        lm.match_basis = pline.receipt_basis
         prior = self.master.already_invoiced(po.ebeln, pline.ebelp)
         lm.prior_invoiced_qty = qty(prior)
         cumulative = qty(prior + inv_qty)
 
-        # ---- quantity: against the goods receipt ------------------------
-        gr_exception = False
-        if pline.webre and pline.wepos:
-            received = self.master.received_qty(po.ebeln, pline.ebelp)
-            lm.received_qty = received
-            lm.open_qty = qty(received - prior)
-            if received <= 0:
-                gr_exception = True
+        # ---- credit memos ----------------------------------------------
+        # A credit gives money back, so every comparison below would read
+        # backwards. The only question worth asking is whether we are being
+        # credited more than we were ever billed.
+        if inv.is_credit:
+            lm.open_qty = qty(prior - inv_qty)
+            if prior <= 0:
+                lm.status = MatchStatus.EXCEPTION
                 lm.exceptions.append(
-                    Exception_(code="GR_MISSING", scope="line", line_no=l.line_no,
-                               detail="GR-based invoice verification is active but nothing has been received",
-                               expected="> 0 received", actual="0")
+                    Exception_(code="CREDIT_WITHOUT_INVOICE", scope="line", line_no=l.line_no,
+                               detail="nothing has been invoiced on this line, so there is "
+                                      "nothing to credit",
+                               expected="> 0 previously invoiced", actual="0")
                 )
-            else:
-                over = qty(cumulative - received)
-                if over > 0:
-                    within = self.policy.tolerances["DQ"].passes(over, received)
-                    gr_exception = not within
-                    lm.exceptions.append(
-                        Exception_(
-                            code="QTY_EXCEEDS_GR", scope="line", line_no=l.line_no,
-                            detail=(
-                                f"invoiced {inv_qty} {pline.meins}"
-                                + (f" plus {prior} already invoiced" if prior else "")
-                                + f" against {received} received"
-                            ),
-                            expected=f"<= {received} {pline.meins}",
-                            actual=f"{cumulative} {pline.meins}",
-                            variance=f"+{over} {pline.meins}",
-                            within_tolerance=within,
-                        )
-                    )
-                elif received < pline.menge:
-                    lm.exceptions.append(
-                        Exception_(code="UNDER_DELIVERY", scope="line", line_no=l.line_no,
-                                   detail="partial delivery: invoicing only what has arrived",
-                                   expected=f"{pline.menge} {pline.meins} ordered",
-                                   actual=f"{received} {pline.meins} received",
-                                   within_tolerance=True)
-                    )
+            elif inv_qty > prior:
+                lm.status = MatchStatus.EXCEPTION
+                lm.exceptions.append(
+                    Exception_(code="CREDIT_EXCEEDS_INVOICED", scope="line", line_no=l.line_no,
+                               detail="credit is larger than what was billed on this line",
+                               expected=f"<= {qty(prior)} {pline.meins}",
+                               actual=f"{inv_qty} {pline.meins}",
+                               variance=f"+{qty(inv_qty - prior)} {pline.meins}")
+                )
+            self._check_price(l, lm, po, pline, inv_qty, inv_unit_price)
+            lm.matched_amount = money(-(pline.unit_price * inv_qty))
+            if lm.exceptions and lm.status == MatchStatus.MATCHED:
+                lm.status = MatchStatus.EXCEPTION
+            return lm
+
+        # ---- receipt evidence -------------------------------------------
+        # Three-way match is one shape with three possible middle documents:
+        # a goods movement, an accepted service entry sheet, or -- on a limit
+        # order -- no receipt at all, where the money drawn down is the
+        # control. A line with no receipt is either a deliberate 2-way match
+        # or a missing one, and `match_basis` is what tells them apart.
+        gr_exception = False
+        basis = lm.match_basis
+
+        if basis == "goods_receipt":
+            gr_exception = self._check_against_receipt(
+                l, lm, pline, inv_qty, prior, cumulative,
+                received=self.master.received_qty(po.ebeln, pline.ebelp),
+                what="received",
+                missing_code="GR_MISSING",
+                missing_detail="GR-based invoice verification is active but nothing has been received",
+            )
+        elif basis == "service_entry":
+            gr_exception = self._check_against_service_entry(
+                l, lm, po, pline, inv_qty, prior, cumulative)
+        elif basis == "limit":
+            gr_exception = self._check_against_limit(
+                l, lm, po, pline, inv_qty, inv_unit_price)
         else:
+            # order_only: a 2-way match. No receipt is expected, so the order
+            # itself is the only thing to check against.
             lm.received_qty = None
             lm.open_qty = qty(pline.menge - prior)
 
         # ---- quantity: against the order --------------------------------
-        # Skipped when the GR check already blocked: two exceptions for one
-        # cause just makes the reviewer read twice.
-        if not gr_exception:
+        # Skipped when the receipt check already blocked: two exceptions for
+        # one cause just makes the reviewer read twice. A limit item has no
+        # ordered quantity to test.
+        if not gr_exception and basis != "limit":
             allowed = qty(pline.menge * (Decimal("1") + pline.uebto / Decimal("100")))
             if cumulative > allowed:
                 over_po = qty(cumulative - pline.menge)
@@ -432,25 +519,7 @@ class MatchEngine:
                 )
 
         # ---- price -------------------------------------------------------
-        price_diff_unit = (inv_unit_price - pline.unit_price).quantize(Decimal("0.000001"))
-        base_value = money(pline.unit_price * inv_qty)
-        variance_value = money(price_diff_unit * inv_qty)
-        lm.price_variance_pct = (
-            (price_diff_unit / pline.unit_price * Decimal("100")).quantize(Decimal("0.01"))
-            if pline.unit_price else Decimal("0")
-        )
-        if price_diff_unit != 0:
-            within = self.policy.tolerances["PP"].passes(variance_value, base_value)
-            lm.exceptions.append(
-                Exception_(
-                    code="PRICE_VARIANCE", scope="line", line_no=l.line_no,
-                    detail=f"unit price differs from PO {po.ebeln}/{pline.ebelp}",
-                    expected=f"{pline.unit_price} per {pline.meins}",
-                    actual=f"{inv_unit_price} per {pline.meins}",
-                    variance=f"{lm.price_variance_pct}% ({variance_value} {po.waers})",
-                    within_tolerance=within,
-                )
-            )
+        self._check_price(l, lm, po, pline, inv_qty, inv_unit_price)
 
         # ---- line arithmetic ---------------------------------------------
         if l.amount is not None and l.menge is not None and l.unit_price is not None:
@@ -469,9 +538,17 @@ class MatchEngine:
 
         # What we would actually pay on this line: PO price, quantity we can
         # justify. Never the invoice's own number.
-        payable_qty = min(cumulative, lm.received_qty if lm.received_qty is not None else pline.menge)
-        payable_qty = qty(max(payable_qty - prior, Decimal("0")))
-        lm.matched_amount = money(payable_qty * pline.unit_price)
+        if lm.match_basis == "limit":
+            # No quantity to justify -- the ceiling is the money. Pay what was
+            # billed, capped at whatever headroom is left under the limit.
+            limit = pline.limit_value or pline.net_value
+            headroom = money(max(limit - self.master.already_invoiced_value(po.ebeln, pline.ebelp),
+                                 Decimal("0")))
+            lm.matched_amount = money(min(money(inv_unit_price * inv_qty), headroom))
+        else:
+            payable_qty = min(cumulative, lm.received_qty if lm.received_qty is not None else pline.menge)
+            payable_qty = qty(max(payable_qty - prior, Decimal("0")))
+            lm.matched_amount = money(payable_qty * pline.unit_price)
 
         blocking = [e for e in lm.exceptions if not e.within_tolerance and e.severity != Severity.INFO]
         if blocking:
@@ -482,32 +559,215 @@ class MatchEngine:
             lm.status = MatchStatus.MATCHED
         return lm
 
+    def _check_price(self, l, lm, po, pline, inv_qty, inv_unit_price) -> None:
+        """Unit price against the purchase order price.
+
+        Identical for invoices and credit memos: a credit at the wrong price
+        is as wrong as an invoice at the wrong price, and in the same
+        direction.
+        """
+        price_diff_unit = (inv_unit_price - pline.unit_price).quantize(Decimal("0.000001"))
+        base_value = money(pline.unit_price * inv_qty)
+        variance_value = money(price_diff_unit * inv_qty)
+        lm.price_variance_pct = (
+            (price_diff_unit / pline.unit_price * Decimal("100")).quantize(Decimal("0.01"))
+            if pline.unit_price else Decimal("0")
+        )
+        if price_diff_unit == 0:
+            return
+        within = self.policy.tolerances["PP"].passes(variance_value, base_value)
+        lm.exceptions.append(
+            Exception_(
+                code="PRICE_VARIANCE", scope="line", line_no=l.line_no,
+                detail=f"unit price differs from PO {po.ebeln}/{pline.ebelp}",
+                expected=f"{pline.unit_price} per {pline.meins}",
+                actual=f"{inv_unit_price} per {pline.meins}",
+                variance=f"{lm.price_variance_pct}% ({variance_value} {po.waers})",
+                within_tolerance=within,
+            )
+        )
+
+    def _check_against_receipt(self, l, lm, pline, inv_qty, prior, cumulative,
+                               received, what, missing_code, missing_detail) -> bool:
+        """Cumulative invoiced against cumulative received.
+
+        Shared by goods receipts and accepted service entry sheets, because
+        the arithmetic does not care which document confirmed the delivery.
+        Returns True when the line is blocked on this check.
+        """
+        lm.received_qty = received
+        lm.open_qty = qty(received - prior)
+        if received <= 0:
+            lm.exceptions.append(
+                Exception_(code=missing_code, scope="line", line_no=l.line_no,
+                           detail=missing_detail,
+                           expected=f"> 0 {what}", actual="0")
+            )
+            return True
+
+        over = qty(cumulative - received)
+        if over > 0:
+            within = self.policy.tolerances["DQ"].passes(over, received)
+            lm.exceptions.append(
+                Exception_(
+                    code="QTY_EXCEEDS_GR", scope="line", line_no=l.line_no,
+                    detail=(
+                        f"invoiced {inv_qty} {pline.meins}"
+                        + (f" plus {prior} already invoiced" if prior else "")
+                        + f" against {received} {what}"
+                    ),
+                    expected=f"<= {received} {pline.meins}",
+                    actual=f"{cumulative} {pline.meins}",
+                    variance=f"+{over} {pline.meins}",
+                    within_tolerance=within,
+                )
+            )
+            return not within
+
+        if received < pline.menge:
+            lm.exceptions.append(
+                Exception_(code="UNDER_DELIVERY", scope="line", line_no=l.line_no,
+                           detail=f"partial delivery: invoicing only what has been {what}",
+                           expected=f"{pline.menge} {pline.meins} ordered",
+                           actual=f"{received} {pline.meins} {what}",
+                           within_tolerance=True)
+            )
+        return False
+
+    def _check_against_service_entry(self, l, lm, po, pline, inv_qty, prior, cumulative) -> bool:
+        """A service leaves no material movement, so the accepted entry sheet
+        is the evidence that the work happened.
+
+        An unaccepted sheet is reported separately from a missing one. They
+        are different conversations: one is chasing a signature, the other is
+        asking whether the work was done at all.
+        """
+        sheets = self.master.entry_sheets(po.ebeln, pline.ebelp)
+        accepted = self.master.accepted_service_qty(po.ebeln, pline.ebelp)
+        lm.received_qty = accepted
+        lm.open_qty = qty(accepted - prior)
+
+        if not sheets:
+            lm.exceptions.append(
+                Exception_(code="SES_MISSING", scope="line", line_no=l.line_no,
+                           detail="service line with no entry sheet posted against it",
+                           expected="an accepted entry sheet", actual="none")
+            )
+            return True
+
+        if accepted <= 0:
+            pending = ", ".join(sh.lblni for sh in sheets)
+            lm.exceptions.append(
+                Exception_(code="SES_NOT_ACCEPTED", scope="line", line_no=l.line_no,
+                           detail=f"entry sheet {pending} has been posted but not accepted",
+                           expected="accepted", actual="awaiting acceptance")
+            )
+            return True
+
+        return self._check_against_receipt(
+            l, lm, pline, inv_qty, prior, cumulative,
+            received=accepted, what="accepted",
+            missing_code="SES_MISSING",
+            missing_detail="service line with no accepted entry sheet",
+        )
+
+    def _check_against_limit(self, l, lm, po, pline, inv_qty, inv_unit_price) -> bool:
+        """A limit order has no quantity to receive against, so the control
+        is the money drawn down against the PO's own ceiling.
+
+        Quantity is meaningless here and deliberately left unset rather than
+        filled with a zero that reads like 'nothing received'.
+        """
+        lm.received_qty = None
+        limit = pline.limit_value or pline.net_value
+        prior_value = self.master.already_invoiced_value(po.ebeln, pline.ebelp)
+        this_value = money(inv_unit_price * inv_qty)
+        drawn = money(prior_value + this_value)
+        lm.open_qty = None
+
+        over = money(drawn - limit)
+        if over <= 0:
+            return False
+
+        within = self.policy.tolerances["LA"].passes(over, limit)
+        lm.exceptions.append(
+            Exception_(
+                code="LIMIT_EXCEEDED", scope="line", line_no=l.line_no,
+                detail=(
+                    f"billed {this_value}"
+                    + (f" against {prior_value} already drawn" if prior_value else "")
+                    + f" on a limit of {limit}"
+                ),
+                expected=f"<= {limit}",
+                actual=str(drawn),
+                variance=f"+{over}",
+                within_tolerance=within,
+            )
+        )
+        return not within
+
+
     def _infer_line(self, po, l: InvoiceLine):
-        """When the item number is missing or unreadable, try to identify the
-        PO line from the description and price instead of failing outright.
-        Only accepted when exactly one candidate is plausible."""
-        if l.ebelp:
-            return None
-        desc = (l.description or "").lower()
-        cands = []
+        """Identify the PO line when the supplier did not give a usable one.
+
+        Suppliers rarely mirror your purchase order. They renumber lines,
+        quote their own article numbers, or omit the item entirely -- and the
+        invoice is still correct. Failing those outright sends clean invoices
+        to a human for a clerical reason, which is the expensive kind of
+        false exception.
+
+        Four signals, strongest first: the material number is decisive;
+        description, price and quantity each corroborate. The result is a
+        (line, confident) pair -- `confident` is False when the best
+        candidate is not clearly ahead of the runner-up, and the caller
+        refuses rather than guessing, for the same reason unit conversion
+        refuses across dimensions.
+        """
+        desc = (l.description or "").strip().lower()
+        scored = []
         for pl in po.lines:
             score = 0
-            if desc and desc[:18] in pl.description.lower():
-                score += 2
+
+            # Material number, if the supplier quoted ours at all.
+            if getattr(l, "matnr", None) and pl.matnr:
+                if str(l.matnr).strip().lower() == pl.matnr.strip().lower():
+                    score += 6
+
+            # Description: a prefix match either way, so "Hex bolt M12x60"
+            # matches "Hex bolt M12x60 grade 8.8, zinc".
+            if desc and pl.description:
+                pd = pl.description.strip().lower()
+                head = desc[:18]
+                if head and (head in pd or pd[:18] in desc):
+                    score += 3
+
+            # Price, which is what actually distinguishes two similar lines.
             if l.unit_price is not None and pl.unit_price:
                 rel = abs(l.unit_price - pl.unit_price) / pl.unit_price
                 if rel < Decimal("0.02"):
-                    score += 2
+                    score += 3
                 elif rel < Decimal("0.10"):
                     score += 1
-            if score >= 2:
-                cands.append((score, pl))
-        if len(cands) == 1:
-            return cands[0][1]
-        best = sorted(cands, key=lambda c: -c[0])
-        if len(best) >= 2 and best[0][0] > best[1][0]:
-            return best[0][1]
-        return None
+
+            # Quantity, weakest of the four: it corroborates, never decides.
+            if l.menge is not None and pl.menge:
+                if l.menge == pl.menge:
+                    score += 1
+
+            if score > 0:
+                scored.append((score, pl))
+
+        if not scored:
+            return None, False
+
+        scored.sort(key=lambda c: -c[0])
+        best_score, best = scored[0]
+        if best_score < 3:
+            return None, False
+        # A clear winner, or a tie we refuse to break.
+        if len(scored) > 1 and scored[1][0] >= best_score:
+            return best, False
+        return best, True
 
     # ------------------------------------------------------------------ #
 

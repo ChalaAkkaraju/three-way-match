@@ -187,6 +187,11 @@ class State:
                 "goods_receipts": [g.to_dict() for g in
                                    (self.pipeline.master.gr_rows(lm.ebeln, lm.ebelp)
                                     if (lm.ebeln and lm.ebelp) else [])],
+                "entry_sheets": [sh.to_dict() for sh in
+                                 (self.pipeline.master.entry_sheets(lm.ebeln, lm.ebelp)
+                                  if (lm.ebeln and lm.ebelp) else [])],
+                "drawn_to_date": str(self.pipeline.master.already_invoiced_value(
+                    lm.ebeln, lm.ebelp)) if (lm.ebeln and lm.ebelp) else None,
             })
         return {
             **r.to_dict(),

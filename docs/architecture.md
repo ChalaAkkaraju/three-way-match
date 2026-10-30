@@ -5,7 +5,7 @@ order and its goods receipt, applies the company's approval policy, and hands
 whatever fails to a reviewer with the numbers and the documents that explain
 it.
 
-About 6,700 lines of Python and one 1,150-line HTML file. No third-party
+About 7,500 lines of Python and one 1,200-line HTML file. No third-party
 runtime dependencies — the standard library, `urllib` for HTTP, and
 `reportlab` only to render sample PDFs.
 
@@ -49,7 +49,7 @@ flowchart TB
 
     subgraph code["Code layer — deterministic"]
         STORE["store.py<br/>PO / GR / vendor master"]
-        MATCH["matching.py<br/>three-way match, 21 rules"]
+        MATCH["matching.py<br/>three-way match, 29 rules"]
         POL["policy.py<br/>decision ladder + routing"]
     end
 
@@ -84,23 +84,23 @@ flowchart TB
 
 | Module | Lines | Responsibility |
 | --- | ---: | --- |
-| `models.py` | 535 | Domain types, `Decimal` money, the 21-rule exception catalogue |
-| `config.py` | 211 | Tolerance keys, approval ladder, unit-of-measure dimensions |
-| `generator.py` | 857 | Synthetic SAP-shaped corpus with labelled failure cases |
+| `models.py` | 661 | Domain types, `Decimal` money, the 29-rule exception catalogue |
+| `config.py` | 231 | Tolerance keys, approval ladder, unit-of-measure dimensions |
+| `generator.py` | 1171 | Synthetic SAP-shaped corpus: goods receipts, entry sheets, limit orders, credit memos, charges, labelled failure cases |
 | `documents.py` | 168 | Render an invoice to text or PDF, so extraction has real input |
 | `extraction.py` | 595 | **The model boundary.** Fields plus confidence, nothing else |
-| `store.py` | 156 | Read model over master data; vendor resolution, duplicate ledger |
-| `matching.py` | 521 | **The three-way match engine.** All arithmetic, no model |
+| `store.py` | 183 | Read model over master data; vendor resolution, entry sheets, limit drawdown, duplicate ledger |
+| `matching.py` | 781 | **The match engine.** All arithmetic, no model. Goods receipts, entry sheets, limit orders and 2-way lines |
 | `policy.py` | 122 | Decision ladder, approval routing, payable amount |
-| `pipeline.py` | 132 | Orchestration and per-stage latency |
+| `pipeline.py` | 135 | Orchestration and per-stage latency |
 | `ingest.py` | 136 | Uploaded PDFs through the same engine as the corpus |
 | `corpus.py` | 612 | Contracts, rate cards, policies, correspondence, disputes |
-| `retrieval.py` | 523 | Chunking, BM25, embeddings, fusion, **the access filter** |
+| `retrieval.py` | 529 | Chunking, BM25, embeddings, fusion, **the access filter** |
 | `llm.py` | 243 | Tool-calling chat over both providers |
-| `agent.py` | 427 | The investigation agent and its read-only tools |
-| `evals.py` | 340 | Extraction scored apart from decisions |
+| `agent.py` | 455 | The investigation agent and its read-only tools |
+| `evals.py` | 394 | Extraction, decisions and line resolution scored apart |
 | `evals_rag.py` | 391 | Retrieval scored apart from grounding; the permission audit |
-| `api.py` | 436 | HTTP service on `http.server` |
+| `api.py` | 441 | HTTP service on `http.server` |
 | `cli.py` | 266 | Command line |
 
 ---
@@ -213,7 +213,7 @@ flowchart TB
 ```
 
 - One container. `PORT` injected by Railway; `/api/health` is the health check.
-- The build runs all 84 tests — a broken match engine fails the deploy rather
+- The build runs all 103 tests — a broken match engine fails the deploy rather
   than shipping.
 - Tests execute at build time, so a deployed image is one that passed.
 
@@ -223,7 +223,7 @@ Everything is in memory, and that is a deliberate trade for a demo:
 
 | State | Lifetime | Note |
 | --- | --- | --- |
-| Corpus run (50 invoices) | Rebuilt on boot and on policy change | Deterministic, ~0.15 ms/invoice |
+| Corpus run (62 invoices) | Rebuilt on boot and on policy change | Deterministic, ~0.15 ms/invoice |
 | Retriever index | Built once on boot | Survives policy changes — tolerances have nothing to do with contracts |
 | Uploaded invoices | Until restart | Re-matched on policy change, **never re-extracted** |
 | Briefings | Cached per `(doc_id, role)` | Re-run on demand |
@@ -268,7 +268,7 @@ is there.
   contract each.
 - **Honest failure.** Every capability that needs a key reports whether it has
   one. Nothing silently degrades.
-- **Testability at the seams.** 84 tests, including assertions on what the
+- **Testability at the seams.** 103 tests, including assertions on what the
   system *cannot* do: leak a document, or move a verdict.
 
 ## 8. What it does not do

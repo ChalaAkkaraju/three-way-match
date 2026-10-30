@@ -43,7 +43,7 @@ ORDER = [
     ("architecture.md", "Architecture",
      "Component map, boundaries, retrieval design and runtime topology"),
     ("design-decisions.md", "Design Decisions",
-     "Seventeen decisions, what each rejects, and what it costs"),
+     "Twenty-two decisions, what each rejects, and what it costs"),
     ("process-flow.md", "Process Flows",
      "Invoice to decision, ingestion, the agent loop, and the rule catalogue"),
     ("user-guide.md", "User Guide",

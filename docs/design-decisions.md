@@ -312,3 +312,109 @@ rebuilt in under a second.
 **Why it is stated rather than hidden.** It is the first question anyone
 technical will ask. The seam for fixing it — `store.py` and `State` — already
 exists, which is the useful part of the answer.
+
+---
+
+## D18 · One match, several possible receipts
+
+**Decision.** Whether a line needs a goods receipt, an accepted service entry
+sheet, or nothing at all is a property of the purchase order line, not a mode
+the system is run in. The engine records which document it used.
+
+**Why it is not a setting.** SAP does not have a "2-way match" switch and
+neither should this: `WEPOS` says whether anything is expected to arrive,
+`WEBRE` whether the invoice must tie to specific receipts, and the item
+category says whether the thing being bought is deliverable at all. A real
+invoice population contains all of these at once — utilities and licences
+beside bolts and valves.
+
+**What this prevents.** Treating a missing goods receipt as an exception on
+every line raises a false exception on every utility bill, every licence
+renewal and every limit order. That is the failure mode that makes AP stop
+trusting a matching engine, and it is invisible in a corpus made only of
+stock items.
+
+**Why `match_basis` is stated rather than inferred.** A line with no received
+quantity is either a deliberate 2-way match or a missing receipt, and those
+are not the same thing. Leaving the reviewer to work out which from an empty
+field is how a control becomes decorative.
+
+**Dropping a check never drops the others.** A 2-way line is still tested
+against the ordered quantity, the PO price, the currency, and every
+payment-integrity rule. One comparison lighter, not unguarded.
+
+---
+
+## D19 · On a limit order, the money is the control
+
+**Decision.** Limit items carry a value ceiling and no quantity check at all.
+Cumulative value drawn is compared against the ceiling; the nominal order
+quantity is ignored.
+
+**Why.** Nothing is delivered against a blanket order, so there is no receipt
+and no meaningful quantity. Applying the quantity rules anyway would flag
+every normal drawdown as an over-delivery.
+
+**Consequence worth noticing.** The payable amount is capped at the headroom
+remaining under the limit, not at what the invoice asks for. A $3,800 draw
+against $400 of remaining ceiling is blocked *and* reported as $400 payable —
+the same principle as paying from the PO price rather than the invoice total,
+applied to a document that has no unit price to pay from.
+
+---
+
+## D20 · A credit memo is not a negative invoice
+
+**Decision.** Credits run the comparisons in the opposite direction and are
+exempt from duplicate detection.
+
+**Why the exemption.** Duplicate detection asks "are we being billed for this
+twice?". A credit that matches an earlier invoice on vendor, date and amount
+is doing exactly what a credit should do. Flagging it would be a false
+exception built into the design.
+
+**What is still checked.** That the credit does not give back more than was
+ever billed on the line, and that something was billed at all. Both are
+reconciliation errors that are easy to make and expensive to find later.
+
+---
+
+## D21 · Charges with no PO line get a ceiling, not a comparison
+
+**Decision.** Freight, surcharges and packaging are carried on the invoice
+header and tested against a configured ceiling, measured as a proportion of
+the invoice's own line value.
+
+**Why not a comparison.** There is nothing to compare them against — that is
+what makes them unplanned. A line-by-line match is structurally blind here,
+so the only available control is how much may arrive unauthorised.
+
+**Why proportionate.** $200 of freight on a $300 order is a different
+proposition from $200 on a $40,000 one. Both limits apply, as everywhere else.
+
+**They count towards the header total.** Excluding them would raise a total
+mismatch on every invoice carrying freight and bury the real arithmetic
+errors in noise.
+
+---
+
+## D22 · Identify the PO line, and refuse when it is a coin toss
+
+**Decision.** When the quoted item number does not resolve, the line is
+identified from material number, description, price and quantity. A clear
+winner is used and recorded; a tie is refused.
+
+**Why this matters more than it sounds.** Suppliers rarely mirror the
+purchase order. Failing every renumbered line sends clean invoices to a human
+for a clerical reason — the expensive kind of false exception, and the
+complaint every AP team has about every matching engine.
+
+**Why refusing is not a cop-out.** It is the same rule as unit conversion
+across dimensions: a wrong answer that looks right is worse than no answer.
+A line attached to the wrong PO item produces a plausible verdict built on
+the wrong contract.
+
+**Scored separately.** Of the lines identified without a reference, how many
+landed on the right item — and lines resolved to the *wrong* item are
+reported by name rather than folded into an accuracy figure, because they are
+the line-level equivalent of a confidently wrong field.

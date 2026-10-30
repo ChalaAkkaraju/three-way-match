@@ -83,7 +83,10 @@ def build_default_pipeline(
 ):
     """Convenience wiring used by the CLI, the API and the tests."""
     ds: Dataset = build_dataset(seed)
-    master = MasterData(ds.vendors, ds.pos, ds.grs, ds.prior_invoiced, ds.posted_invoices)
+    master = MasterData(
+        ds.vendors, ds.pos, ds.grs, ds.prior_invoiced, ds.posted_invoices,
+        sheets=ds.sheets, prior_invoiced_value=ds.prior_invoiced_value,
+    )
     pipe = Pipeline(
         master,
         policy=policy,

@@ -19,12 +19,15 @@ from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
 from .models import (
+    Charge,
+    DocumentType,
     GoodsReceipt,
     Invoice,
     InvoiceLine,
     ItemCategory,
     MovementType,
     POLine,
+    ServiceEntrySheet,
     PurchaseOrder,
     Vendor,
     money,
@@ -71,6 +74,10 @@ class GoldenCase:
     truth: Invoice                      # what is actually printed on the document
     expected_exceptions: List[str]
     expected_decision: str
+    # invoice line number -> the PO item it genuinely belongs to. Only set
+    # where the supplier did not quote a usable item number, because that is
+    # the only situation in which the engine has to work it out.
+    expected_lines: Dict[int, str] = field(default_factory=dict)
     noise_profile: Dict[str, Any] = field(default_factory=dict)
     note: str = ""
 
@@ -94,6 +101,8 @@ class Dataset:
     prior_invoiced: Dict[Tuple[str, str], Decimal]
     posted_invoices: List[Dict[str, Any]]
     cases: List[GoldenCase]
+    sheets: List[ServiceEntrySheet] = field(default_factory=list)
+    prior_invoiced_value: Dict[Tuple[str, str], Decimal] = field(default_factory=dict)
 
     def gr_for(self, ebeln: str, ebelp: str) -> List[GoodsReceipt]:
         return [g for g in self.grs if g.ebeln == ebeln and g.ebelp == ebelp]
@@ -104,6 +113,10 @@ class Dataset:
             "pos": {k: v.to_dict() for k, v in self.pos.items()},
             "grs": [g.to_dict() for g in self.grs],
             "prior_invoiced": {f"{k[0]}/{k[1]}": str(v) for k, v in self.prior_invoiced.items()},
+            "sheets": [sh.to_dict() for sh in self.sheets],
+            "prior_invoiced_value": {
+                f"{k[0]}/{k[1]}": str(v) for k, v in self.prior_invoiced_value.items()
+            },
             "posted_invoices": self.posted_invoices,
             "cases": [c.to_dict() for c in self.cases],
         }
@@ -116,10 +129,13 @@ class Generator:
         self.pos: Dict[str, PurchaseOrder] = {}
         self.grs: List[GoodsReceipt] = []
         self.prior_invoiced: Dict[Tuple[str, str], Decimal] = {}
+        self.prior_invoiced_value: Dict[Tuple[str, str], Decimal] = {}
         self.posted_invoices: List[Dict[str, Any]] = []
+        self.sheets: List[ServiceEntrySheet] = []
         self.cases: List[GoldenCase] = []
         self._po_seq = 4500001000
         self._gr_seq = 5000001000
+        self._ses_seq = 1000001000
         self._inv_seq = 0
 
     # -- master data ------------------------------------------------------
@@ -141,6 +157,10 @@ class Generator:
     def _next_gr(self) -> str:
         self._gr_seq += 1
         return str(self._gr_seq)
+
+    def _next_ses(self) -> str:
+        self._ses_seq += 1
+        return str(self._ses_seq)
 
     def _next_doc(self) -> str:
         self._inv_seq += 1
@@ -258,11 +278,16 @@ class Generator:
         bank_last4: Optional[str] = None,
         gross_override: Optional[str] = None,
         vendor_name_override: Optional[str] = None,
+        charges: Optional[List[Charge]] = None,
+        doc_type: DocumentType = DocumentType.INVOICE,
     ) -> Invoice:
         doc_id = self._next_doc()
+        charges = charges or []
         net = money(sum((l.amount or Decimal("0")) for l in lines))
+        charge_total = money(sum((c.amount for c in charges), Decimal("0")))
         tax = money(net * Decimal(tax_rate))
-        gross = money(net + tax) if gross_override is None else money(gross_override)
+        gross = (money(net + tax + charge_total) if gross_override is None
+                 else money(gross_override))
         return Invoice(
             doc_id=doc_id,
             xblnr=xblnr or f"{vendor.name.split()[0][:3].upper()}-{self.rng.randint(10000, 99999)}",
@@ -275,6 +300,8 @@ class Generator:
             gross_total=gross,
             bank_account_last4=bank_last4 or vendor.bank_account_last4,
             lines=lines,
+            charges=charges,
+            doc_type=doc_type,
             source_file=f"inbox/{doc_id}.pdf",
             received_at=(BASE_DATE - timedelta(days=max(days_ago - 2, 0))).isoformat(),
         )
@@ -309,6 +336,113 @@ class Generator:
             tax_code=tax_code or line.tax_code,
         )
 
+    def _enter_service(
+        self,
+        po: PurchaseOrder,
+        line: POLine,
+        fraction: str = "1.0",
+        days_ago: int = 10,
+        accepted: bool = True,
+    ) -> ServiceEntrySheet:
+        """Post a service entry sheet against a service line.
+
+        The acceptance flag is the whole point: a sheet sitting unaccepted is
+        the service equivalent of goods still on the lorry.
+        """
+        menge = qty(line.menge * Decimal(fraction))
+        sheet = ServiceEntrySheet(
+            lblni=self._next_ses(),
+            ebeln=po.ebeln,
+            ebelp=line.ebelp,
+            menge=menge,
+            meins=line.meins,
+            value=money(menge * line.unit_price),
+            budat=(BASE_DATE - timedelta(days=days_ago)).isoformat(),
+            accepted=accepted,
+            accepted_by="m.silva" if accepted else "",
+        )
+        self.sheets.append(sheet)
+        return sheet
+
+    def _limit_po(
+        self,
+        lifnr: str,
+        description: str,
+        limit: str,
+        *,
+        uom: str = "H",
+        rate: str = "95.00",
+        days_ago: int = 60,
+    ) -> PurchaseOrder:
+        """A limit order: a ceiling in money, with nothing to receive.
+
+        Quantity is nominal -- what matters is how much has been drawn down
+        against the limit, which is why the matcher ignores quantity entirely
+        on these lines.
+        """
+        ebeln = self._next_po()
+        line = POLine(
+            ebelp="00010",
+            matnr="",
+            description=description,
+            menge=qty(1),
+            meins=uom,
+            netpr=money(rate),
+            peinh=1,
+            pstyp=ItemCategory.LIMIT,
+            webre=False,
+            wepos=False,
+            limit_value=money(limit),
+            tax_code="I1",
+        )
+        po = PurchaseOrder(
+            ebeln=ebeln,
+            lifnr=lifnr,
+            bedat=(BASE_DATE - timedelta(days=days_ago)).isoformat(),
+            ekgrp="002",
+            requester="a.novak",
+            lines=[line],
+        )
+        self.pos[ebeln] = po
+        return po
+
+    def _service_po(
+        self,
+        lifnr: str,
+        description: str,
+        *,
+        hours: int = 40,
+        rate: str = "135.00",
+        days_ago: int = 45,
+    ) -> PurchaseOrder:
+        """A service order, confirmed by an entry sheet rather than a goods
+        movement."""
+        ebeln = self._next_po()
+        line = POLine(
+            ebelp="00010",
+            matnr="SRV-20010",
+            description=description,
+            menge=qty(hours),
+            meins="H",
+            netpr=money(rate),
+            peinh=1,
+            pstyp=ItemCategory.SERVICE,
+            webre=False,
+            wepos=False,
+            ses_required=True,
+            tax_code="I1",
+        )
+        po = PurchaseOrder(
+            ebeln=ebeln,
+            lifnr=lifnr,
+            bedat=(BASE_DATE - timedelta(days=days_ago)).isoformat(),
+            ekgrp="007",
+            requester="r.chen",
+            lines=[line],
+        )
+        self.pos[ebeln] = po
+        return po
+
     def _add(
         self,
         scenario: str,
@@ -317,6 +451,7 @@ class Generator:
         decision: str,
         note: str = "",
         noise: Optional[Dict[str, Any]] = None,
+        expected_lines: Optional[Dict[int, str]] = None,
     ) -> GoldenCase:
         case = GoldenCase(
             doc_id=inv.doc_id,
@@ -324,6 +459,7 @@ class Generator:
             truth=inv,
             expected_exceptions=sorted(set(expected)),
             expected_decision=decision,
+            expected_lines=dict(expected_lines or {}),
             noise_profile=noise or {},
             note=note,
         )
@@ -545,16 +681,6 @@ class Generator:
         inv = self._invoice(vendor, [il])
         self._add("po_not_found", inv, ["PO_NOT_FOUND"], "block_for_payment",
                   "Vendor quoted a PO number that is not in the system -- typo or a PO from another entity.")
-
-        # ---------------- PO line does not exist --------------------------
-        vendor = v["0000100058"]
-        po = self._make_po(vendor.lifnr, n_lines=1)
-        l = po.lines[0]
-        self._receive(po, l, "1.0")
-        il = self._iline(1, po, l, ebelp="00090")
-        inv = self._invoice(vendor, [il])
-        self._add("po_line_not_found", inv, ["PO_LINE_NOT_FOUND"], "block_for_payment",
-                  "Right PO, wrong item number.")
 
         # ---------------- no goods receipt posted -------------------------
         vendor = v["0000100034"]
@@ -843,6 +969,192 @@ class Generator:
         self._add("clean_cfo_tier", inv, [], "approve_with_review",
                   "Clean but six figures. Routing must escalate on value even with zero exceptions.")
 
+        # ================================================================
+        # Receipt evidence other than a goods movement
+        # ================================================================
+
+        # ---------------- service, entry sheet accepted -------------------
+        vendor = v["0000100062"]
+        po = self._service_po(vendor.lifnr, "Commissioning support, site B", hours=40)
+        l = po.lines[0]
+        self._enter_service(po, l, "1.0", accepted=True)
+        inv = self._invoice(vendor, [self._iline(1, po, l)])
+        self._add("service_entry_accepted", inv, [], "approve_with_review",
+                  "A service line matched against an accepted entry sheet. No material moved, "
+                  "and the match is still three-way -- the middle document is just a different one.")
+
+        # ---------------- service, sheet posted but not accepted ----------
+        vendor = v["0000100062"]
+        po = self._service_po(vendor.lifnr, "Commissioning support, site C", hours=24)
+        l = po.lines[0]
+        self._enter_service(po, l, "1.0", accepted=False)
+        inv = self._invoice(vendor, [self._iline(1, po, l)])
+        self._add("service_entry_not_accepted", inv, ["SES_NOT_ACCEPTED"], "block_for_payment",
+                  "The sheet exists but nobody signed it off. Unaccepted is not weaker evidence "
+                  "that the work happened -- it is none.")
+
+        # ---------------- service, no sheet at all ------------------------
+        vendor = v["0000100047"]
+        po = self._service_po(vendor.lifnr, "Annual pressure vessel inspection", hours=16)
+        l = po.lines[0]
+        inv = self._invoice(vendor, [self._iline(1, po, l)])
+        self._add("service_entry_missing", inv, ["SES_MISSING"], "block_for_payment",
+                  "Billed for work with nothing confirming it was done. The service equivalent "
+                  "of an invoice with no goods receipt.")
+
+        # ---------------- limit order, inside the ceiling -----------------
+        vendor = v["0000100058"]
+        po = self._limit_po(vendor.lifnr, "Call-off maintenance labour, Q3", limit="12000.00")
+        l = po.lines[0]
+        self.prior_invoiced_value[(po.ebeln, l.ebelp)] = money("7400.00")
+        inv = self._invoice(vendor, [self._iline(1, po, l, quantity=qty(30))])
+        self._add("limit_po_within", inv, [], "auto_approve",
+                  "A blanket order drawn down in stages. Nothing is received against it, so the "
+                  "money spent is the only control -- and this draw stays under the ceiling.")
+
+        # ---------------- limit order, ceiling breached -------------------
+        vendor = v["0000100058"]
+        po = self._limit_po(vendor.lifnr, "Call-off maintenance labour, Q4", limit="9000.00")
+        l = po.lines[0]
+        self.prior_invoiced_value[(po.ebeln, l.ebelp)] = money("8600.00")
+        inv = self._invoice(vendor, [self._iline(1, po, l, quantity=qty(40))])
+        self._add("limit_po_exceeded", inv, ["LIMIT_EXCEEDED"], "block_for_payment",
+                  "Only $400 of headroom left and $3,800 billed against it. Quantity is "
+                  "meaningless here; the limit is the whole control.")
+
+        # ================================================================
+        # Credit memos
+        # ================================================================
+
+        # ---------------- credit against a billed line --------------------
+        vendor = v["0000100021"]
+        po = self._make_po(vendor.lifnr, n_lines=1)
+        l = po.lines[0]
+        self._receive(po, l, "1.0")
+        self.prior_invoiced[(po.ebeln, l.ebelp)] = qty(l.menge)
+        inv = self._invoice(
+            vendor, [self._iline(1, po, l, quantity=qty(l.menge * Decimal("0.25")))],
+            doc_type=DocumentType.CREDIT_MEMO,
+        )
+        self._add("credit_memo_clean", inv, [], "auto_approve",
+                  "Goods returned, a quarter of the line credited back. Every comparison the "
+                  "matcher makes runs the other way on a credit.")
+
+        # ---------------- credit larger than what was billed --------------
+        vendor = v["0000100021"]
+        po = self._make_po(vendor.lifnr, n_lines=1)
+        l = po.lines[0]
+        self._receive(po, l, "1.0")
+        self.prior_invoiced[(po.ebeln, l.ebelp)] = qty(l.menge * Decimal("0.5"))
+        inv = self._invoice(
+            vendor, [self._iline(1, po, l, quantity=qty(l.menge))],
+            doc_type=DocumentType.CREDIT_MEMO,
+        )
+        self._add("credit_exceeds_invoiced", inv, ["CREDIT_EXCEEDS_INVOICED"], "block_for_payment",
+                  "Crediting back twice what was ever billed. Reads as generosity; it is a "
+                  "reconciliation error at best.")
+
+        # ---------------- credit against a line never billed --------------
+        vendor = v["0000100093"]
+        po = self._make_po(vendor.lifnr, n_lines=1)
+        l = po.lines[0]
+        self._receive(po, l, "1.0")
+        inv = self._invoice(
+            vendor, [self._iline(1, po, l, quantity=qty(l.menge * Decimal("0.5")))],
+            doc_type=DocumentType.CREDIT_MEMO,
+        )
+        self._add("credit_without_invoice", inv, ["CREDIT_WITHOUT_INVOICE"], "block_for_payment",
+                  "Nothing has been invoiced on this line, so there is nothing to give back.")
+
+        # ================================================================
+        # Charges with no purchase order line behind them
+        # ================================================================
+
+        # ---------------- freight within the ceiling ----------------------
+        vendor = v["0000100047"]
+        po = self._make_po(vendor.lifnr, n_lines=1)
+        l = po.lines[0]
+        l.menge, l.netpr, l.peinh = qty(40), money("148.50"), 1
+        self._receive(po, l, "1.0")
+        inv = self._invoice(
+            vendor, [self._iline(1, po, l)],
+            charges=[Charge(kind="freight", description="LTL delivery, zone 3",
+                            amount=money("120.00"))],
+        )
+        self._add("freight_within_tolerance", inv, [], "approve_with_review",
+                  "Freight nobody raised a PO line for. Real, legitimate, and invisible to a "
+                  "line-by-line match -- so the control is a ceiling, not a comparison.")
+
+        # ---------------- freight beyond the ceiling ----------------------
+        vendor = v["0000100047"]
+        po = self._make_po(vendor.lifnr, n_lines=1)
+        l = po.lines[0]
+        l.menge, l.netpr, l.peinh = qty(10), money("96.00"), 1
+        self._receive(po, l, "1.0")
+        inv = self._invoice(
+            vendor, [self._iline(1, po, l)],
+            charges=[
+                Charge(kind="freight", description="Expedited delivery", amount=money("340.00")),
+                Charge(kind="surcharge", description="Fuel surcharge", amount=money("95.00")),
+            ],
+        )
+        self._add("unplanned_charge_excessive", inv, ["UNPLANNED_CHARGE"], "block_for_payment",
+                  "$435 of charges on a $960 order. Nothing on the purchase order authorised "
+                  "any of it.")
+
+        # ================================================================
+        # Supplier lines that do not mirror the purchase order
+        # ================================================================
+
+        # ---------------- supplier renumbered the line --------------------
+        vendor = v["0000100021"]
+        po = self._make_po(vendor.lifnr, n_lines=1)
+        l = po.lines[0]
+        self._receive(po, l, "1.0")
+        il = self._iline(1, po, l, ebelp="00090")
+        inv = self._invoice(vendor, [il])
+        self._add("po_line_renumbered", inv, [], "auto_approve",
+                  "The supplier used their own line numbering. Material, description, quantity "
+                  "and price all agree, so the line resolves and the invoice is clean. Failing "
+                  "this outright is a false exception for a clerical reason.",
+                  expected_lines={1: l.ebelp})
+
+        # ---------------- nothing on the PO resembles the line ------------
+        vendor = v["0000100058"]
+        po = self._make_po(vendor.lifnr, n_lines=1)
+        l = po.lines[0]
+        self._receive(po, l, "1.0")
+        il = self._iline(1, po, l, ebelp="00090",
+                         unit_price=Decimal("7.13"), quantity=qty(3))
+        il.description = "Calibration certificate, annual"
+        inv = self._invoice(vendor, [il])
+        self._add("po_line_not_found", inv, ["PO_LINE_NOT_FOUND"], "block_for_payment",
+                  "A bad item number and nothing on the order that fits it either. The engine "
+                  "has to be able to tell this apart from a renumbered line.")
+
+        # ---------------- two lines fit equally well ----------------------
+        vendor = v["0000100093"]
+        po = self._make_po(vendor.lifnr, n_lines=1)
+        twin = POLine(
+            ebelp="00020",
+            matnr=po.lines[0].matnr,
+            description=po.lines[0].description,
+            menge=po.lines[0].menge,
+            meins=po.lines[0].meins,
+            netpr=po.lines[0].netpr,
+            peinh=po.lines[0].peinh,
+            tax_code=po.lines[0].tax_code,
+        )
+        po.lines.append(twin)
+        self._receive(po, po.lines[0], "1.0")
+        self._receive(po, twin, "1.0")
+        il = self._iline(1, po, po.lines[0], ebelp=None)
+        inv = self._invoice(vendor, [il])
+        self._add("line_ambiguous", inv, ["LINE_AMBIGUOUS"], "block_for_payment",
+                  "Two identical lines on one order and no item number to choose between them. "
+                  "Refusing is the safe failure -- the same reason unit conversion refuses "
+                  "across dimensions.")
+
         return Dataset(
             vendors=self.vendors,
             pos=self.pos,
@@ -850,6 +1162,8 @@ class Generator:
             prior_invoiced=self.prior_invoiced,
             posted_invoices=self.posted_invoices,
             cases=self.cases,
+            sheets=self.sheets,
+            prior_invoiced_value=self.prior_invoiced_value,
         )
 
 

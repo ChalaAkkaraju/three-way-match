@@ -11,7 +11,7 @@ import re
 from decimal import Decimal
 from typing import Dict, List, Optional, Tuple
 
-from .models import GoodsReceipt, PurchaseOrder, Vendor, qty
+from .models import ServiceEntrySheet, GoodsReceipt, PurchaseOrder, Vendor, qty
 
 LEGAL_SUFFIXES = {
     "inc", "incorporated", "llc", "llp", "lp", "ltd", "limited", "co",
@@ -35,12 +35,22 @@ class MasterData:
         grs: List[GoodsReceipt],
         prior_invoiced: Optional[Dict[Tuple[str, str], Decimal]] = None,
         posted_invoices: Optional[List[dict]] = None,
+        sheets: Optional[List[ServiceEntrySheet]] = None,
+        prior_invoiced_value: Optional[Dict[Tuple[str, str], Decimal]] = None,
     ) -> None:
         self.vendors = vendors
         self.pos = pos
         self.grs = grs
         self.prior_invoiced = dict(prior_invoiced or {})
         self.posted_invoices = list(posted_invoices or [])
+        self.sheets = list(sheets or [])
+        # Limit items have no quantity to accumulate, so the drawdown has to
+        # be tracked in money instead.
+        self.prior_invoiced_value = dict(prior_invoiced_value or {})
+
+        self._sheets: Dict[Tuple[str, str], List[ServiceEntrySheet]] = {}
+        for sh in self.sheets:
+            self._sheets.setdefault((sh.ebeln, sh.ebelp), []).append(sh)
 
         self._received: Dict[Tuple[str, str], Decimal] = {}
         self._gr_dates: Dict[Tuple[str, str], List[str]] = {}
@@ -70,6 +80,23 @@ class MasterData:
 
     def already_invoiced(self, ebeln: str, ebelp: str) -> Decimal:
         return self.prior_invoiced.get((ebeln, ebelp), Decimal("0"))
+
+    def already_invoiced_value(self, ebeln: str, ebelp: str) -> Decimal:
+        return self.prior_invoiced_value.get((ebeln, ebelp), Decimal("0"))
+
+    def entry_sheets(self, ebeln: str, ebelp: str) -> List[ServiceEntrySheet]:
+        return self._sheets.get((ebeln, ebelp), [])
+
+    def accepted_service_qty(self, ebeln: str, ebelp: str) -> Decimal:
+        """Quantity confirmed by *accepted* entry sheets only.
+
+        A sheet awaiting acceptance contributes nothing. That is the whole
+        point of the acceptance step -- it is the service equivalent of the
+        goods actually arriving."""
+        return qty(sum(
+            (sh.menge for sh in self.entry_sheets(ebeln, ebelp) if sh.accepted),
+            Decimal("0"),
+        ))
 
     # -- vendor resolution ------------------------------------------------
 

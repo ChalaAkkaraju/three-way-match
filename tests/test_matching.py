@@ -80,7 +80,7 @@ def invoice(menge="100", price="10.00", uom="EA", ebeln="4500001001",
 
 
 def run(inv, purchase_order=None, receipts=None, prior=None, posted=None,
-        policy=None, vendors=None):
+        policy=None, vendors=None, sheets=None, prior_value=None):
     p = purchase_order or po()
     master = MasterData(
         vendors or {v.lifnr: v for v in [vendor()]},
@@ -88,6 +88,8 @@ def run(inv, purchase_order=None, receipts=None, prior=None, posted=None,
         receipts if receipts is not None else [gr(p.ebeln)],
         prior or {},
         posted or [],
+        sheets=sheets or [],
+        prior_invoiced_value=prior_value or {},
     )
     pol = policy or Policy()
     result = MatchEngine(master, pol, as_of=AS_OF).match(inv)
@@ -224,9 +226,22 @@ def _():
     assert codes(r) == ["PO_NOT_FOUND"], codes(r)
 
 
-@check("unknown PO line is caught")
+@check("a renumbered PO line resolves instead of failing")
 def _():
+    # The supplier quoted their own item number. Everything else on the line
+    # agrees, so this is a clerical difference, not a discrepancy -- failing
+    # it outright would be a false exception.
     r, _ = run(invoice(ebelp="00090"))
+    assert "PO_LINE_NOT_FOUND" not in codes(r), codes(r)
+    assert r.lines[0].resolved_by == "inferred"
+    assert "LINE_INFERRED" in {e.code for e in r.all_exceptions}
+
+
+@check("unknown PO line is caught when nothing on the order fits")
+def _():
+    inv = invoice(ebelp="00090", menge="3", price="7.13")
+    inv.lines[0].description = "Calibration certificate, annual"
+    r, _ = run(inv)
     assert codes(r) == ["PO_LINE_NOT_FOUND"], codes(r)
 
 
@@ -395,6 +410,183 @@ def _():
     assert r.lines[0].status.value == "matched", r.lines[0].status
     assert r.lines[1].status.value == "exception", r.lines[1].status
     assert any("1 of 2 lines are clean" in n for n in o.notes), o.notes
+
+
+print("\nreceipt evidence")
+
+
+@check("a 2-way line never asks for a goods receipt")
+def _():
+    # WEPOS off: nothing is expected to arrive, so a missing goods receipt is
+    # the normal state of affairs rather than an exception.
+    r, _ = run(invoice(), purchase_order=po(webre=False), receipts=[])
+    assert "GR_MISSING" not in codes(r), codes(r)
+    assert r.lines[0].match_basis == "order_only"
+    assert r.lines[0].received_qty is None
+
+
+@check("a 2-way line is still checked against the order")
+def _():
+    # Dropping the receipt check must not drop the quantity check with it.
+    r, _ = run(invoice(menge="200"), purchase_order=po(webre=False), receipts=[])
+    assert "QTY_EXCEEDS_PO" in codes(r), codes(r)
+
+
+@check("a 3-way line without a receipt still blocks")
+def _():
+    r, _ = run(invoice(), receipts=[])
+    assert "GR_MISSING" in codes(r), codes(r)
+
+
+@check("a service line needs an accepted entry sheet")
+def _():
+    from app.models import ServiceEntrySheet
+
+    p = po()
+    p.lines[0].ses_required = True
+    p.lines[0].webre = p.lines[0].wepos = False
+    sheet = ServiceEntrySheet(lblni="1000001", ebeln=p.ebeln, ebelp="00010",
+                              menge=qty("100"), meins="EA", value=money("1000.00"),
+                              budat="2026-05-20", accepted=False)
+
+    blocked, _ = run(invoice(), purchase_order=p, receipts=[], sheets=[sheet])
+    assert "SES_NOT_ACCEPTED" in codes(blocked), codes(blocked)
+
+    sheet.accepted = True
+    ok, _ = run(invoice(), purchase_order=p, receipts=[], sheets=[sheet])
+    assert not codes(ok), codes(ok)
+    assert ok.lines[0].match_basis == "service_entry"
+
+
+@check("a missing entry sheet reads differently from an unaccepted one")
+def _():
+    # Chasing a signature and asking whether the work happened at all are
+    # different conversations, so they get different codes.
+    p = po()
+    p.lines[0].ses_required = True
+    p.lines[0].webre = p.lines[0].wepos = False
+    r, _ = run(invoice(), purchase_order=p, receipts=[], sheets=[])
+    assert "SES_MISSING" in codes(r), codes(r)
+
+
+@check("a limit order is controlled by value, not quantity")
+def _():
+    from app.models import ItemCategory
+
+    p = po(menge="1", price="95.00")
+    p.lines[0].pstyp = ItemCategory.LIMIT
+    p.lines[0].webre = p.lines[0].wepos = False
+    p.lines[0].limit_value = money("5000.00")
+
+    # 30 hours at 95.00 is 2,850 against a 5,000 ceiling: fine, and the
+    # quantity being 30x the nominal order quantity is not an exception.
+    inv = invoice(menge="30", price="95.00")
+    ok, _ = run(inv, purchase_order=p, receipts=[])
+    assert not codes(ok), codes(ok)
+    assert ok.lines[0].match_basis == "limit"
+    assert "QTY_EXCEEDS_PO" not in codes(ok)
+
+    # Same order, already drawn down to 4,800.
+    over, _ = run(inv, purchase_order=p, receipts=[],
+                  prior_value={(p.ebeln, "00010"): money("4800.00")})
+    assert "LIMIT_EXCEEDED" in codes(over), codes(over)
+
+
+print("\ncredit memos")
+
+
+@check("a credit within what was billed is clean")
+def _():
+    from app.models import DocumentType
+
+    inv = invoice(menge="40")
+    inv.doc_type = DocumentType.CREDIT_MEMO
+    r, _ = run(inv, prior={("4500001001", "00010"): qty("100")})
+    assert not codes(r), codes(r)
+
+
+@check("a credit larger than what was billed is caught")
+def _():
+    from app.models import DocumentType
+
+    inv = invoice(menge="100")
+    inv.doc_type = DocumentType.CREDIT_MEMO
+    r, _ = run(inv, prior={("4500001001", "00010"): qty("40")})
+    assert "CREDIT_EXCEEDS_INVOICED" in codes(r), codes(r)
+
+
+@check("a credit against a line never billed is caught")
+def _():
+    from app.models import DocumentType
+
+    inv = invoice(menge="10")
+    inv.doc_type = DocumentType.CREDIT_MEMO
+    r, _ = run(inv)
+    assert "CREDIT_WITHOUT_INVOICE" in codes(r), codes(r)
+
+
+@check("a credit mirroring an invoice is not a duplicate")
+def _():
+    # Matching an earlier invoice on vendor, date and amount is what a credit
+    # memo is supposed to do.
+    from app.models import DocumentType
+
+    posted = [{"lifnr": "0000100021", "xblnr": "NOR-1", "bldat": "2026-05-25",
+               "gross_total": "1080.00", "belnr": "5105600001"}]
+    inv = invoice(menge="40")
+    inv.doc_type = DocumentType.CREDIT_MEMO
+    r, _ = run(inv, prior={("4500001001", "00010"): qty("100")}, posted=posted)
+    assert "DUPLICATE_INVOICE" not in codes(r), codes(r)
+
+
+print("\nunplanned charges")
+
+
+@check("freight inside the ceiling is recorded but does not block")
+def _():
+    from app.models import Charge
+
+    inv = invoice()
+    inv.charges = [Charge(kind="freight", description="LTL", amount=money("60.00"))]
+    inv.gross_total = money(inv.gross_total + Decimal("60.00"))
+    r, _ = run(inv)
+    assert "UNPLANNED_CHARGE" not in codes(r), codes(r)
+    assert "UNPLANNED_CHARGE" in {e.code for e in r.all_exceptions}
+
+
+@check("freight beyond the ceiling blocks")
+def _():
+    from app.models import Charge
+
+    inv = invoice()
+    inv.charges = [Charge(kind="freight", description="LTL", amount=money("400.00"))]
+    inv.gross_total = money(inv.gross_total + Decimal("400.00"))
+    r, _ = run(inv)
+    assert "UNPLANNED_CHARGE" in codes(r), codes(r)
+
+
+@check("charges count towards the header total rather than breaking it")
+def _():
+    from app.models import Charge
+
+    inv = invoice()
+    inv.charges = [Charge(kind="freight", description="LTL", amount=money("60.00"))]
+    inv.gross_total = money(inv.gross_total + Decimal("60.00"))
+    r, _ = run(inv)
+    assert "HEADER_TOTAL_MISMATCH" not in codes(r), codes(r)
+
+
+@check("two equally plausible PO lines are refused, not guessed")
+def _():
+    p = po()
+    twin = POLine(ebelp="00020", matnr="MAT-1", description="Widget",
+                  menge=qty("100"), meins="EA", netpr=money("10.00"), peinh=1,
+                  pstyp=ItemCategory.STANDARD, webre=True, wepos=True,
+                  uebto=Decimal("10"), loekz=False, tax_code="I0")
+    p.lines.append(twin)
+    r, _ = run(invoice(ebelp=None), purchase_order=p,
+               receipts=[gr(p.ebeln), gr(p.ebeln)])
+    assert "LINE_AMBIGUOUS" in codes(r), codes(r)
 
 
 print("\ntolerance semantics")

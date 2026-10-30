@@ -227,6 +227,47 @@ class Evaluator:
     # -- throughput / benefit ---------------------------------------------
 
     @staticmethod
+    def score_line_resolution(cases: List[Any], results: List[ProcessedInvoice]) -> Dict[str, Any]:
+        """Did we attach each invoice line to the right purchase order line?
+
+        Scored apart from the decision, because the two fail for different
+        reasons and have different fixes. A line resolved to the wrong PO
+        item can still produce a plausible-looking verdict -- it is the line
+        equivalent of a confidently wrong field, so it is counted by name
+        rather than folded into an accuracy figure.
+        """
+        by_reference = inferred = refused = correct = wrong = 0
+
+        for case, res in zip(cases, results):
+            expected = getattr(case, "expected_lines", {}) or {}
+            for lm in res.match.lines:
+                if lm.resolved_by == "inferred":
+                    inferred += 1
+                    want = expected.get(lm.line_no)
+                    if want is not None:
+                        if want == lm.ebelp:
+                            correct += 1
+                        else:
+                            wrong += 1
+                else:
+                    by_reference += 1
+            refused += sum(
+                1 for e in res.match.all_exceptions if e.code == "LINE_AMBIGUOUS"
+            )
+
+        judged = correct + wrong
+        return {
+            "lines_total": by_reference + inferred,
+            "resolved_by_reference": by_reference,
+            "resolved_by_inference": inferred,
+            "refused_as_ambiguous": refused,
+            "inference_judged": judged,
+            "inference_correct": correct,
+            "inference_wrong": wrong,
+            "inference_accuracy": round(correct / judged, 4) if judged else None,
+        }
+
+    @staticmethod
     def score_operations(results: List[ProcessedInvoice]) -> Dict[str, Any]:
         lat = sorted(r.latency_ms.get("total", 0.0) for r in results)
         stages = ["extract", "match", "policy"]
@@ -255,10 +296,12 @@ class Evaluator:
         extraction = self.score_extraction(cases, results)
         decisions = self.score_decisions(cases, results)
         ops = self.score_operations(results)
+        lines = self.score_line_resolution(cases, results)
         return {
             "extraction": extraction,
             "decisions": decisions,
             "operations": ops,
+            "line_resolution": lines,
             "headline": {
                 "field_extraction_accuracy": extraction["field_accuracy"],
                 "match_decision_accuracy": decisions["decision_accuracy"],
@@ -269,6 +312,7 @@ class Evaluator:
                 "touchless_rate": ops["touchless_rate"],
                 "latency_p95_ms": ops["latency_ms"]["p95"],
                 "review_hours_saved": ops["review_hours_saved"],
+                "line_inference_wrong": lines["inference_wrong"],
             },
         }
 
@@ -294,6 +338,16 @@ def format_report(report: Dict[str, Any]) -> str:
     lines.append(f"  confidently wrong fields         {e['confidently_wrong_fields']}"
                  "   <- the dangerous kind")
     lines.append(f"  exception set exact match        {d['exception_set_exact_match']}")
+    lines.append("")
+    lines.append("Line resolution")
+    lines.append("-" * 74)
+    lr = report["line_resolution"]
+    lines.append(f"  invoice lines                    {lr['lines_total']}")
+    lines.append(f"  item number quoted and valid     {lr['resolved_by_reference']}")
+    lines.append(f"  identified without a reference   {lr['resolved_by_inference']}")
+    lines.append(f"  refused as ambiguous             {lr['refused_as_ambiguous']}")
+    lines.append(f"  inferred to the WRONG PO line    {lr['inference_wrong']}"
+                 "   <- the dangerous kind")
     lines.append("")
     lines.append("Per exception class")
     lines.append("-" * 74)

@@ -202,7 +202,7 @@ Three deliberate behaviours:
 
 ## Exception catalogue
 
-21 rules, each with a severity that determines routing.
+29 rules, each with a severity that determines routing.
 
 | Severity | Meaning | Routes to |
 | --- | --- | --- |
@@ -222,6 +222,9 @@ Three deliberate behaviours:
 | `PO_DELETED` | blocker | PO line flagged for deletion |
 | `NO_PO_REFERENCE` | blocker | No PO on the line at all |
 | `GR_MISSING` | blocker | GR-based verification active, nothing received |
+| `SES_MISSING` | blocker | Service line with no entry sheet posted against it |
+| `SES_NOT_ACCEPTED` | blocker | An entry sheet exists but nobody has accepted it |
+| `LIMIT_EXCEEDED` | blocker | Value drawn against a limit order is past its ceiling |
 | `QTY_EXCEEDS_GR` | blocker | Cumulative invoiced > net received |
 | `QTY_EXCEEDS_PO` | blocker | Cumulative invoiced > ordered + over-delivery tolerance |
 | `UOM_MISMATCH` | blocker | Units not convertible |
@@ -229,8 +232,68 @@ Three deliberate behaviours:
 | `CURRENCY_MISMATCH` | blocker | Invoice currency ≠ PO currency |
 | `HEADER_TOTAL_MISMATCH` | blocker | Gross ≠ sum of lines + tax |
 | `LINE_MATH_ERROR` | blocker | Line amount ≠ qty × price |
+| `CREDIT_EXCEEDS_INVOICED` | blocker | A credit gives back more than was billed on the line |
+| `CREDIT_WITHOUT_INVOICE` | blocker | A credit against a line that was never invoiced |
+| `UNPLANNED_CHARGE` | blocker | Freight or surcharges with no PO line, beyond the ceiling |
+| `LINE_AMBIGUOUS` | blocker | Two PO lines fit the invoice line equally well |
 | `MISSING_FIELD` | blocker | A field required to post is absent |
 | `TAX_CODE_INVALID` | warning | Tax code outside the allowed set |
 | `DATE_ANOMALY` | warning | Future-dated, or predates the goods receipt |
 | `LOW_CONFIDENCE_FIELD` | warning | A decision-critical field read below threshold |
 | `UNDER_DELIVERY` | info | Partial delivery — expected, not flagged |
+| `LINE_INFERRED` | info | PO line identified without a usable item number |
+
+
+---
+
+## What counts as the receipt
+
+The three-way match is one shape with more than one middle document. Which
+one applies is decided per purchase order line, the way SAP decides it, and
+the engine records which was used so a reviewer can tell a deliberate 2-way
+match from a missing receipt.
+
+| PO line | Middle document | Quantity checked against |
+| --- | --- | --- |
+| `WEPOS` and `WEBRE` set | Goods receipt | Net received, cumulative |
+| `ses_required` (service, PSTYP 9) | Accepted service entry sheet | Accepted quantity, cumulative |
+| Limit item (PSTYP 1) | None — nothing is delivered | Nothing. The ceiling is the value drawn |
+| `WEPOS` off | None expected | Ordered quantity. This is a 2-way match |
+
+```mermaid
+flowchart TB
+    L["PO line"] --> Q{"What confirms receipt?"}
+    Q -->|goods movement| GR["Net received,<br/>cumulative"]
+    Q -->|accepted entry sheet| SES["Accepted quantity,<br/>cumulative"]
+    Q -->|nothing is delivered| LIM["Value drawn<br/>against the ceiling"]
+    Q -->|no receipt expected| TWO["Ordered quantity<br/>2-way match"]
+    GR --> P["Price, tolerances,<br/>policy ladder"]
+    SES --> P
+    LIM --> P
+    TWO --> P
+```
+
+Dropping the receipt check never drops the order check with it. A 2-way line
+is still tested against the quantity ordered, the PO price, the currency and
+every payment-integrity rule — it is one comparison lighter, not unguarded.
+
+---
+
+## Identifying the PO line
+
+Suppliers rarely mirror the purchase order. They renumber lines, quote their
+own article numbers, or omit the item entirely, and the invoice is still
+correct. Failing those outright produces a false exception for a clerical
+reason, which is the expensive kind.
+
+When the quoted item number does not resolve, four signals are scored:
+material number (decisive), description, unit price, and quantity
+(corroborating only). A clear winner is used and recorded as `LINE_INFERRED`
+so the reviewer knows the match rests on an inference. A tie is refused as
+`LINE_AMBIGUOUS` rather than guessed — the same rule that makes unit
+conversion refuse across dimensions.
+
+The evaluation scores this separately: of the lines identified without a
+reference, how many landed on the right PO item. A line resolved to the
+*wrong* item is reported by name, because it is the line-level equivalent of
+a confidently wrong field.

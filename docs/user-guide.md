@@ -8,7 +8,7 @@ Live at **three-way-match-production.up.railway.app**
 
 ## Before anything else: what this screen is for
 
-Fifty invoices arrived. The system checked each one against its purchase order
+Sixty-two invoices arrived. The system checked each one against its purchase order
 and its goods receipt, and applied the company's approval policy. About a third
 were clean and low-value enough to post without anyone looking at them. The
 rest are on your desk, each with the rule that stopped it and the numbers that
@@ -186,7 +186,7 @@ And they are lost when the service restarts.
 
 ## The other tabs
 
-**Evaluation** — how well the system does on 50 labelled invoices. The number
+**Evaluation** — how well the system does on 62 labelled invoices. The number
 to look at first is **false approvals**: invoices waved through that a reviewer
 would have stopped. It is the only figure here that costs money, so it is
 reported on its own and every instance is named. Second is **false
@@ -194,7 +194,7 @@ exceptions** — clean invoices sent to a human for nothing, which is what makes
 AP stop trusting a system.
 
 **Policy** — the tolerance keys and the approval ladder. The auto-approve
-slider re-runs the ladder over all 50 invoices live, so you can see what
+slider re-runs the ladder over all 62 invoices live, so you can see what
 raising the limit actually buys and costs. Note what it never moves: the
 non-waivable rules at the bottom of the page. A duplicate or a bank-detail
 change is blocked at any value, because small-ticket is how those attacks work.
@@ -218,7 +218,7 @@ python3 -m app.cli evals             # the match scorecard
 python3 -m app.cli rag-evals         # retrieval + the permission audit
 python3 -m app.cli show INV-0020     # one invoice end to end, with the trace
 python3 -m app.cli ask "can they raise rates" --role ap_clerk
-python3 -m tests                     # 84 tests
+python3 -m tests                     # 103 tests
 ```
 
 Reading real PDFs and running the agent need a key:

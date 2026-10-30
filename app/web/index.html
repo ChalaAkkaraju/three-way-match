@@ -537,14 +537,62 @@ function srcKV(pairs) {
 function lineHTML(d, lm, i) {
   const ev = (d.evidence || [])[i] || {};
   const pl = ev.po_line, po = ev.po, grs = ev.goods_receipts || [];
+  const sheets = ev.entry_sheets || [];
   const il = (d.invoice.lines || []).find(x => x.line_no === lm.line_no) || {};
   const net = grs.reduce((a,g) => a + Number(g.signed_qty), 0);
   const cur = d.invoice.currency || d.invoice.waers || "USD";
   const bad = lm.status === "exception" || lm.status === "unmatched";
+
+  // Which document answered "did we actually get this?". Stated rather than
+  // left for the reader to infer: a line with no receipt is either a
+  // deliberate 2-way match or a missing one.
+  const basis = lm.match_basis || "goods_receipt";
+  const basisLabel = {
+    goods_receipt: "3-way · goods receipt",
+    service_entry: "3-way · entry sheet",
+    order_only:    "2-way · no receipt expected",
+    limit:         "limit order · value only"
+  }[basis] || basis;
+
+  let third;
+  if (basis === "service_entry") {
+    third = `<h4>Entry sheet says</h4>` + srcKV(
+      sheets.length ? sheets.map(s => [
+        (s.accepted ? "Accepted " : "Awaiting acceptance ") + s.budat,
+        s.menge + " " + s.meins, !s.accepted
+      ]).concat([["Previously invoiced", lm.prior_invoiced_qty]])
+        : [["No entry sheet posted", "—", true]]);
+  } else if (basis === "limit") {
+    third = `<h4>Limit says</h4>` + srcKV([
+      ["Ceiling", money(pl ? pl.limit_value : null, cur)],
+      ["Drawn before this", money(ev.drawn_to_date, cur)],
+      ["This document", money(lm.matched_amount, cur), bad]
+    ]);
+  } else if (basis === "order_only") {
+    third = `<h4>Receipt</h4>` + srcKV([
+      ["Not expected on this line", "2-way match"],
+      ["Checked against", "ordered quantity"],
+      ["Previously invoiced", lm.prior_invoiced_qty]
+    ]);
+  } else {
+    third = `<h4>Goods receipt says</h4>` + srcKV(
+      grs.length ? grs.map(g => [
+        (g.bwart === "101" ? "Received" : "Reversed") + " " + g.budat,
+        (g.bwart === "101" ? "" : "−") + g.menge + " " + g.meins
+      ]).concat([
+        ["Net received", net.toFixed(3), bad],
+        ["Previously invoiced", lm.prior_invoiced_qty]
+      ]) : [["Nothing received", "0", true]]);
+  }
+
   return `<div class="evline">
     <div class="lh">
       <span><b>Line ${lm.line_no}</b> · ${esc(il.description || "")}</span>
-      <span class="tag ${bad ? "blocker" : (lm.status === "matched_with_tolerance" ? "warning" : "none")}">${esc(lm.status.replace(/_/g," "))}</span>
+      <span>
+        <span class="tag none" title="which document confirmed receipt">${esc(basisLabel)}</span>
+        ${lm.resolved_by === "inferred" ? '<span class="tag warning" title="the supplier did not quote a usable item number">line inferred</span>' : ""}
+        <span class="tag ${bad ? "blocker" : (lm.status === "matched_with_tolerance" ? "warning" : "none")}">${esc(lm.status.replace(/_/g," "))}</span>
+      </span>
     </div>
     <div class="sources">
       <div class="src"><h4>Invoice says</h4>${srcKV([
@@ -561,15 +609,7 @@ function lineHTML(d, lm, i) {
         ["GR-based IV", pl.webre ? "yes" : "no"],
         ["Over-delivery tol.", pl.uebto + "%"]
       ] : [["Purchase order", "not found", true]])}</div>
-      <div class="src"><h4>Goods receipt says</h4>${srcKV(
-        grs.length ? grs.map(g => [
-          (g.bwart === "101" ? "Received" : "Reversed") + " " + g.budat,
-          (g.bwart === "101" ? "" : "−") + g.menge + " " + g.meins
-        ]).concat([
-          ["Net received", net.toFixed(3), bad],
-          ["Previously invoiced", lm.prior_invoiced_qty]
-        ]) : [[pl && !pl.webre ? "Not required (2-way match)" : "Nothing received", pl && !pl.webre ? "—" : "0", pl && pl.webre]]
-      )}</div>
+      <div class="src">${third}</div>
     </div>
     ${(lm.exceptions||[]).map(excHTML).join("")}
   </div>`;
@@ -588,8 +628,9 @@ function renderDetail(d) {
   el.innerHTML = `
     <div class="dh">
       <div class="eyebrow">${esc(d.invoice.doc_id)} · ${esc(d.scenario.replace(/_/g," "))}</div>
-      <h2>${esc(d.invoice.vendor_name)}</h2>
-      <div class="sub mono">Invoice ${esc(d.invoice.xblnr || "—")} · ${esc(d.invoice.bldat || "—")} · ${esc(money(d.invoice.gross_total, cur))} · vendor ${esc(d.invoice.lifnr || "unresolved")}</div>
+      <h2>${esc(d.invoice.vendor_name)}${d.invoice.is_credit ? ' <span class="tag warning">credit memo</span>' : ""}</h2>
+      <div class="sub mono">${d.invoice.is_credit ? "Credit" : "Invoice"} ${esc(d.invoice.xblnr || "—")} · ${esc(d.invoice.bldat || "—")} · ${esc(money(d.invoice.gross_total, cur))} · vendor ${esc(d.invoice.lifnr || "unresolved")}</div>
+      ${(d.invoice.charges || []).length ? `<div class="sub mono">Charges with no PO line: ${(d.invoice.charges||[]).map(c => esc(c.description) + " " + esc(money(c.amount, cur))).join(" · ")}</div>` : ""}
     </div>
 
     <div class="verdict v-${esc(dec)}">

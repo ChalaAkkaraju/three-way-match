@@ -55,9 +55,18 @@ class ItemCategory(str, Enum):
     """EKPO-PSTYP."""
 
     STANDARD = "0"
+    LIMIT = "1"
     CONSIGNMENT = "2"
     SUBCONTRACTING = "3"
     SERVICE = "9"
+
+
+class DocumentType(str, Enum):
+    """RBKP-VGART. An invoice asks for money; a credit memo gives it back,
+    and the sign of every quantity and value follows from this one field."""
+
+    INVOICE = "RE"
+    CREDIT_MEMO = "RG"
 
 
 class MovementType(str, Enum):
@@ -137,6 +146,32 @@ RULES: Dict[str, RuleSpec] = {
                  "Received less than ordered. Expected for staged deliveries."),
         RuleSpec("UOM_MISMATCH", Severity.BLOCKER, "Unit of measure mismatch", False,
                  "Invoice UoM cannot be converted to the PO order unit."),
+        # --- receipt evidence other than a goods movement ---
+        RuleSpec("SES_MISSING", Severity.BLOCKER, "No service entry sheet", False,
+                 "A service line needs an entry sheet; none has been posted against this item."),
+        RuleSpec("SES_NOT_ACCEPTED", Severity.BLOCKER, "Service entry sheet not accepted", False,
+                 "An entry sheet exists but nobody has accepted it. Unaccepted is not weak "
+                 "evidence that the work happened -- it is none."),
+        RuleSpec("LIMIT_EXCEEDED", Severity.BLOCKER, "Blanket PO limit exceeded", True,
+                 "Cumulative value drawn against a limit item is beyond the PO's own ceiling. "
+                 "On a limit order the value is the control, because there is no quantity to receive."),
+        # --- credit memos ---
+        RuleSpec("CREDIT_EXCEEDS_INVOICED", Severity.BLOCKER, "Credit exceeds what was invoiced", False,
+                 "A credit memo is giving back more than was ever billed on this PO line."),
+        RuleSpec("CREDIT_WITHOUT_INVOICE", Severity.BLOCKER, "Credit against an unbilled line", False,
+                 "Nothing has been invoiced on this line, so there is nothing to credit."),
+        # --- charges with no PO line behind them ---
+        RuleSpec("UNPLANNED_CHARGE", Severity.BLOCKER, "Unplanned charge beyond tolerance", True,
+                 "Freight, surcharges or packaging billed with no purchase order line behind them, "
+                 "beyond the configured ceiling."),
+        # --- line resolution ---
+        RuleSpec("LINE_INFERRED", Severity.INFO, "PO line identified without a reference", True,
+                 "The supplier did not quote a usable item number; the line was identified from "
+                 "material, description, quantity and price. Recorded so the reviewer knows the "
+                 "match rests on an inference."),
+        RuleSpec("LINE_AMBIGUOUS", Severity.BLOCKER, "PO line cannot be identified", False,
+                 "Two or more PO lines are equally plausible for this invoice line. Refusing to "
+                 "guess, for the same reason unit conversion refuses across dimensions."),
         # --- price ---
         RuleSpec("PRICE_VARIANCE", Severity.BLOCKER, "Unit price differs from PO", True,
                  "Invoice unit price is outside the price tolerance against EKPO-NETPR/PEINH."),
@@ -226,6 +261,30 @@ class POLine:
     untto: Decimal = Decimal("10")   # under-delivery tolerance %
     loekz: bool = False           # deletion indicator
     tax_code: str = "I0"
+    # Limit items (PSTYP 1) carry a value ceiling instead of a quantity to
+    # receive against. Nothing is delivered, so there is no goods receipt and
+    # no quantity check -- the control is the money drawn down to date.
+    limit_value: Optional[Decimal] = None
+    # Service items (PSTYP 9) are confirmed by an accepted entry sheet rather
+    # than a material movement. Same question as a goods receipt -- did we get
+    # it? -- asked of a different document.
+    ses_required: bool = False
+
+    @property
+    def receipt_basis(self) -> str:
+        """Which document answers 'did we actually get this?'.
+
+        The three-way match is the same shape in every case; only the middle
+        document changes. Saying which one was used is what lets a reviewer
+        tell a deliberate 2-way match from a missing goods receipt.
+        """
+        if self.pstyp == ItemCategory.LIMIT:
+            return "limit"
+        if self.ses_required:
+            return "service_entry"
+        if self.wepos and self.webre:
+            return "goods_receipt"
+        return "order_only"
 
     @property
     def unit_price(self) -> Decimal:
@@ -281,6 +340,52 @@ class PurchaseOrder:
             "net_value": str(self.net_value),
             "lines": [l.to_dict() for l in self.lines],
         }
+
+
+@dataclass
+class ServiceEntrySheet:
+    """ESSR/ESLL, reduced to what a match needs.
+
+    A service leaves no material movement, so acceptance of the sheet is the
+    evidence that the work happened. An unaccepted sheet is not weaker
+    evidence -- it is none, and it blocks exactly as a missing goods receipt
+    does.
+    """
+
+    lblni: str                    # entry sheet number
+    ebeln: str
+    ebelp: str
+    menge: Decimal
+    meins: str
+    value: Decimal
+    budat: str                    # period end / posting date, ISO
+    accepted: bool = False
+    accepted_by: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        d = asdict(self)
+        d["menge"] = str(self.menge)
+        d["value"] = str(self.value)
+        return d
+
+
+@dataclass
+class Charge:
+    """An amount on the invoice with no purchase order line behind it.
+
+    Freight, pallet deposits, fuel surcharges. Real, often legitimate, and
+    invisible to a line-by-line match because there is no line to match it
+    against -- which is exactly why it needs a ceiling of its own.
+    """
+
+    kind: str                     # "freight", "surcharge", "packaging", ...
+    description: str
+    amount: Decimal
+    confidences: Dict[str, float] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"kind": self.kind, "description": self.description,
+                "amount": str(self.amount)}
 
 
 @dataclass
@@ -385,9 +490,19 @@ class Invoice:
     gross_total: Optional[Decimal]
     bank_account_last4: Optional[str] = None
     lines: List[InvoiceLine] = field(default_factory=list)
+    charges: List[Charge] = field(default_factory=list)
+    doc_type: DocumentType = DocumentType.INVOICE
     confidences: Dict[str, float] = field(default_factory=dict)
     source_file: str = ""
     received_at: str = ""
+
+    @property
+    def is_credit(self) -> bool:
+        return self.doc_type == DocumentType.CREDIT_MEMO
+
+    @property
+    def charge_total(self) -> Decimal:
+        return money(sum((c.amount for c in self.charges), Decimal("0")))
 
     def conf(self, name: str) -> float:
         return self.confidences.get(name, 1.0)
@@ -416,6 +531,9 @@ class Invoice:
             "source_file": self.source_file,
             "received_at": self.received_at,
             "lines": [l.to_dict() for l in self.lines],
+            "charges": [c.to_dict() for c in self.charges],
+            "doc_type": self.doc_type.value,
+            "is_credit": self.is_credit,
         }
 
 
@@ -439,6 +557,12 @@ class LineMatch:
     invoice_unit_price: Optional[Decimal] = None
     price_variance_pct: Optional[Decimal] = None
     matched_amount: Optional[Decimal] = None
+    # Which document was used as evidence of receipt, and how the PO line was
+    # arrived at. Both are stated rather than inferred by the reader: a line
+    # with no received quantity is either a deliberate 2-way match or a
+    # missing goods receipt, and those are not the same thing.
+    match_basis: str = "goods_receipt"
+    resolved_by: str = "reference"     # reference | inferred
     exceptions: List[Exception_] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -459,6 +583,8 @@ class LineMatch:
             "invoice_unit_price": s(self.invoice_unit_price),
             "price_variance_pct": s(self.price_variance_pct),
             "matched_amount": s(self.matched_amount),
+            "match_basis": self.match_basis,
+            "resolved_by": self.resolved_by,
             "exceptions": [e.to_dict() for e in self.exceptions],
         }
 
