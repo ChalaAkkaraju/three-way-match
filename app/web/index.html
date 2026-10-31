@@ -646,7 +646,7 @@ function renderDetail(d) {
     ${d.match.header_exceptions.length ? `<div class="sec"><h3>Document-level findings</h3>
       <div class="evline">${d.match.header_exceptions.map(excHTML).join("")}</div></div>` : ""}
 
-    <div class="sec"><h3>Three-way comparison</h3>
+    <div class="sec"><h3>Match comparison</h3>
       ${d.match.lines.map((lm,i) => lineHTML(d, lm, i)).join("")}
     </div>
 

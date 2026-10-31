@@ -218,7 +218,7 @@ python3 -m app.cli evals             # the match scorecard
 python3 -m app.cli rag-evals         # retrieval + the permission audit
 python3 -m app.cli show INV-0020     # one invoice end to end, with the trace
 python3 -m app.cli ask "can they raise rates" --role ap_clerk
-python3 -m tests                     # 103 tests
+python3 -m tests                     # 105 tests
 ```
 
 Reading real PDFs and running the agent need a key:

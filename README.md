@@ -41,7 +41,7 @@ python3 -m app.cli serve             # reviewer UI on http://localhost:8000
 python3 -m app.cli export out --pdf  # run.json plus rendered documents
 python3 -m app.cli rag-evals         # retrieval quality + the permission audit
 python3 -m app.cli ask "can they raise rates" --role ap_clerk
-python3 -m tests                     # 103 tests
+python3 -m tests                     # 105 tests
 ```
 
 To read real invoice PDFs, set a key first:

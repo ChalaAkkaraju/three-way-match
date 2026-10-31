@@ -213,7 +213,7 @@ flowchart TB
 ```
 
 - One container. `PORT` injected by Railway; `/api/health` is the health check.
-- The build runs all 103 tests — a broken match engine fails the deploy rather
+- The build runs all 105 tests — a broken match engine fails the deploy rather
   than shipping.
 - Tests execute at build time, so a deployed image is one that passed.
 
@@ -268,7 +268,7 @@ is there.
   contract each.
 - **Honest failure.** Every capability that needs a key reports whether it has
   one. Nothing silently degrades.
-- **Testability at the seams.** 103 tests, including assertions on what the
+- **Testability at the seams.** 105 tests, including assertions on what the
   system *cannot* do: leak a document, or move a verdict.
 
 ## 8. What it does not do

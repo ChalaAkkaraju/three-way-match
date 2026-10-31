@@ -412,6 +412,44 @@ def _():
     assert any("1 of 2 lines are clean" in n for n in o.notes), o.notes
 
 
+@check("the verdict names the basis the lines were matched on")
+def _():
+    # The badge on each line and the sentence in the verdict come from the
+    # same field. If they can drift apart, the screen starts saying
+    # "three-way match" over a line marked 2-way, which is exactly the
+    # detail an SAP reviewer notices first.
+    from app.models import ItemCategory
+
+    three, _ = run(invoice())
+    _, out3 = run(invoice())
+    assert "goods receipt" in out3.reason, out3.reason
+
+    _, out2 = run(invoice(), purchase_order=po(webre=False), receipts=[])
+    assert "no receipt expected" in out2.reason, out2.reason
+    assert "three-way" not in out2.reason.lower(), out2.reason
+
+    p_lim = po(menge="1", price="95.00")
+    p_lim.lines[0].pstyp = ItemCategory.LIMIT
+    p_lim.lines[0].webre = p_lim.lines[0].wepos = False
+    p_lim.lines[0].limit_value = money("5000.00")
+    _, outl = run(invoice(menge="30", price="95.00"), purchase_order=p_lim, receipts=[])
+    assert "blanket" in outl.reason.lower(), outl.reason
+
+
+@check("amounts in the verdict are written for reading aloud")
+def _():
+    # Asserting the shape rather than a figure: the exposure includes tax,
+    # and a test that hard-codes the arithmetic breaks for the wrong reason
+    # the first time a tax rate changes.
+    import re
+
+    _, out = run(invoice(menge="1000", price="100.00"),
+                 purchase_order=po(menge="1000", price="100.00"),
+                 receipts=[gr(menge="1000")])
+    assert re.search(r"\$\d{1,3},\d{3}\.\d{2}", out.reason), out.reason
+    assert "auto-approve limit" in out.reason
+
+
 print("\nreceipt evidence")
 
 

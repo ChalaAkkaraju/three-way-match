@@ -30,6 +30,41 @@ from .models import (
     money,
 )
 
+# What the invoice was actually matched against, in the words a reviewer
+# would use. Derived from the same `match_basis` the screen badges each line
+# with, so the verdict and the evidence panel cannot drift apart and start
+# saying different things about the same document.
+_BASIS_PHRASE = {
+    "goods_receipt": "Matched against the order and the goods receipt",
+    "service_entry": "Matched against the order and an accepted entry sheet",
+    "order_only":    "Matched against the order, no receipt expected",
+    "limit":         "Within the blanket purchase order limit",
+}
+
+
+def _basis_phrase(match: MatchResult) -> str:
+    """One phrase for the whole document.
+
+    An invoice can mix bases across its lines -- a delivery and a freight
+    service on one document. Saying "matched on more than one basis" is
+    honest; naming only the first line's would be quietly wrong.
+    """
+    bases = {lm.match_basis for lm in match.lines if lm.ebelp}
+    if len(bases) == 1:
+        return _BASIS_PHRASE.get(next(iter(bases)), "Matched")
+    if len(bases) > 1:
+        return "Matched, on more than one basis across the lines"
+    return "Matched"
+
+
+def _amount(value: Decimal) -> str:
+    """Thousands separators and a currency mark.
+
+    The verdict line is read aloud in review meetings; 76641.00 and 7664.10
+    look alike at a glance and do not sound alike at all.
+    """
+    return f"${value:,.2f}"
+
 
 class PolicyEngine:
     def __init__(self, policy: Policy) -> None:
@@ -92,12 +127,14 @@ class PolicyEngine:
 
         elif exposure <= p.auto_approve_limit:
             decision = Decision.AUTO_APPROVE
-            reason = f"Three-way match clean and value at or below the {p.auto_approve_limit} auto-approve limit."
+            reason = (f"{_basis_phrase(match)}. Value is at or below the "
+                      f"{_amount(p.auto_approve_limit)} auto-approve limit.")
             role, sla = None, None
 
         else:
             decision = Decision.APPROVE_WITH_REVIEW
-            reason = f"Three-way match clean, but {exposure} is above the {p.auto_approve_limit} auto-approve limit."
+            reason = (f"{_basis_phrase(match)}. {_amount(exposure)} is above the "
+                      f"{_amount(p.auto_approve_limit)} auto-approve limit.")
             role, sla = tier.role, tier.sla_hours
 
         # --- benefit estimate -----------------------------------------------
